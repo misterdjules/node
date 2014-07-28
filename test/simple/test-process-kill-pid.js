@@ -61,4 +61,4 @@ process.once('SIGHUP', function() {
   process.kill(process.pid, 'SIGHUP');
 });
 
-process.kill(0, 'SIGHUP');
+process.kill(process.pid, 'SIGHUP');
