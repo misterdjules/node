@@ -18,6 +18,7 @@
       'src/node.js',
       'lib/_debugger.js',
       'lib/_linklist.js',
+      'lib/_heap.js',
       'lib/assert.js',
       'lib/buffer.js',
       'lib/child_process.js',
