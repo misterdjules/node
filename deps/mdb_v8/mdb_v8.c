@@ -2811,6 +2811,69 @@ err:
 	return (DCMD_ERR);
 }
 
+/*
+ * Access an internal field of a V8 object.  V8 allows implementers (like Node)
+ * to store pointer-sized values into internal fields within V8 heap objects.
+ * Implementors access these values by 0-based index (e.g., SetInternalField(0,
+ * value)).  These values are stored as an array directly after the last actual
+ * C++ field in the C++ object.
+ *
+ * Node uses internal fields to refer to handles.  For example, a socket's C++
+ * HandleWrap object is typically stored as internal field 0 in the JavaScript
+ * Socket object.  Similarly, the native-heap-allocated chunk of memory
+ * associated with a Node Buffer is referenced by field 0 in the External array
+ * pointed-to by the Node Buffer JSObject.
+ */
+/* ARGSUSED */
+static int
+dcmd_v8internal(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
+{
+	char *bufp;
+	size_t len;
+	ssize_t off;
+	uint8_t type;
+	uintptr_t idx;
+	uintptr_t *fieldaddr;
+
+	v8_class_t *clp;
+	v8_field_t *flp;
+	char buf[256];
+
+	if (mdb_getopts(argc, argv, NULL) != argc - 1 ||
+	    argv[argc - 1].a_type != MDB_TYPE_STRING)
+		return (DCMD_USAGE);
+
+	idx = mdb_strtoull(argv[argc - 1].a_un.a_str);
+
+	bufp = buf;
+	len = sizeof (buf);
+	if (obj_jstype(addr, &bufp, &len, &type) != 0)
+		return (DCMD_ERR);
+	if (type == 0) {
+		mdb_warn("%p: unsupported type\n", addr);
+		return (DCMD_ERR);
+	}
+
+	for (clp = v8_classes; clp != NULL; clp = clp->v8c_next) {
+		if (strcmp(buf, clp->v8c_name) == 0)
+			break;
+	}
+
+	if (clp == NULL) {
+		mdb_warn("%p: didn't find expected class\n", addr);
+		return (DCMD_ERR);
+	}
+
+	off = clp->v8c_end + (idx * sizeof (uintptr_t)) - 1;
+	if (read_heap_ptr(&fieldaddr, addr, off) != 0) {
+		mdb_warn("%p: failed to read from %p\n", addr, addr + off);
+		return (DCMD_ERR);
+	}
+
+	printf("%p\n", fieldaddr);
+	return (DCMD_OK);
+}
+
 /* ARGSUSED */
 static int
 dcmd_v8frametypes(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
@@ -4754,6 +4817,8 @@ static const mdb_dcmd_t v8_mdb_dcmds[] = {
 		"manually add a field to a given class", dcmd_v8field },
 	{ "v8function", ":[-d]", "print JSFunction object details",
 		dcmd_v8function },
+	{ "v8internal", ":[fieldidx]", "print v8 object internal fields",
+		dcmd_v8internal },
 	{ "v8load", "version", "load canned config for a specific V8 version",
 		dcmd_v8load, dcmd_v8load_help },
 	{ "v8frametypes", NULL, "list known V8 frame types",
