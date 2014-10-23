@@ -429,6 +429,26 @@ static int read_typebyte(uint8_t *, uintptr_t);
 static int heap_offset(const char *, const char *, ssize_t *);
 static int jsfunc_name(uintptr_t, char **, size_t *);
 
+typedef struct jsobj_print {
+	char **jsop_bufp;
+	size_t *jsop_lenp;
+	int jsop_indent;
+	uint64_t jsop_depth;
+	boolean_t jsop_printaddr;
+	uintptr_t jsop_baseaddr;
+	int jsop_nprops;
+	const char *jsop_member;
+	boolean_t jsop_found;
+	boolean_t jsop_descended;
+} jsobj_print_t;
+
+static int jsobj_print_number(uintptr_t, jsobj_print_t *);
+static int jsobj_print_oddball(uintptr_t, jsobj_print_t *);
+static int jsobj_print_jsobject(uintptr_t, jsobj_print_t *);
+static int jsobj_print_jsarray(uintptr_t, jsobj_print_t *);
+static int jsobj_print_jsfunction(uintptr_t, jsobj_print_t *);
+static int jsobj_print_jsdate(uintptr_t, jsobj_print_t *);
+
 /*
  * Invoked when this dmod is initially loaded to load the set of classes, enums,
  * and other constants from the metadata in the target binary.
@@ -1216,6 +1236,63 @@ out:
 }
 
 /*
+ * Given an object, returns in "buf" the name of the constructor function.  With
+ * "verbose", prints the pointer to the JSFunction object.  Given anything else,
+ * returns an error (and warns the user why).
+ */
+static int
+obj_jsconstructor(uintptr_t addr, char **bufp, size_t *lenp, boolean_t verbose)
+{
+	uint8_t type;
+	uintptr_t map, consfunc, funcinfop;
+	char funcbuf[80];
+	const char *constype;
+
+	if (!V8_IS_HEAPOBJECT(addr) ||
+	    read_typebyte(&type, addr) != 0 ||
+	    (type != V8_TYPE_JSOBJECT && type != V8_TYPE_JSARRAY)) {
+		mdb_warn("%p is not a JSObject\n", addr);
+		return (-1);
+	}
+
+	if (mdb_vread(&map, sizeof (map), addr + V8_OFF_HEAPOBJECT_MAP) == -1 ||
+	    mdb_vread(&consfunc, sizeof (consfunc),
+	    map + V8_OFF_MAP_CONSTRUCTOR) == -1) {
+		mdb_warn("unable to read object map\n");
+	    	return (-1);
+	}
+
+	if (read_typebyte(&type, consfunc) != 0)
+		return (-1);
+
+	constype = enum_lookup_str(v8_types, type, "");
+	if (strcmp(constype, "Oddball") == 0) {
+		jsobj_print_t jsop;
+		bzero(&jsop, sizeof (jsop));
+		jsop.jsop_bufp = bufp;
+		jsop.jsop_lenp = lenp;
+		return (jsobj_print_oddball(consfunc, &jsop));
+	}
+
+	if (strcmp(constype, "JSFunction") != 0) {
+		mdb_warn("constructor: expected JSFunction, found %s\n",
+		    constype);
+		return (-1);
+	}
+
+	if (read_heap_ptr(&funcinfop, consfunc, V8_OFF_JSFUNCTION_SHARED) != 0)
+		return (-1);
+
+	if (jsfunc_name(funcinfop, bufp, lenp) != 0)
+		return (-1);
+
+	if (verbose)
+		bsnprintf(bufp, lenp, " (JSFunction: %p)", consfunc);
+	
+	return (0);
+}
+
+/*
  * Returns in "buf" a description of the type of "addr" suitable for printing.
  */
 static int
@@ -1271,6 +1348,59 @@ obj_jstype(uintptr_t addr, char **bufp, size_t *lenp, uint8_t *typep)
 	}
 
 	return (0);
+}
+
+/*
+ * V8 allows implementers (like Node) to store pointer-sized values into
+ * internal fields within V8 heap objects.  Implementors access these values by
+ * 0-based index (e.g., SetInternalField(0, value)).  These values are stored as
+ * an array directly after the last actual C++ field in the C++ object.
+ *
+ * Node uses internal fields to refer to handles.  For example, a socket's C++
+ * HandleWrap object is typically stored as internal field 0 in the JavaScript
+ * Socket object.  Similarly, the native-heap-allocated chunk of memory
+ * associated with a Node Buffer is referenced by field 0 in the External array
+ * pointed-to by the Node Buffer JSObject.
+ */
+static int
+obj_v8internal(uintptr_t addr, uint_t idx, uintptr_t *valp)
+{
+	char *bufp;
+	size_t len;
+	ssize_t off;
+	uint8_t type;
+
+	v8_class_t *clp;
+	v8_field_t *flp;
+	char buf[256];
+
+	bufp = buf;
+	len = sizeof (buf);
+	if (obj_jstype(addr, &bufp, &len, &type) != 0)
+		return (DCMD_ERR);
+
+	if (type == 0) {
+		mdb_warn("%p: unsupported type\n", addr);
+		return (DCMD_ERR);
+	}
+
+	for (clp = v8_classes; clp != NULL; clp = clp->v8c_next) {
+		if (strcmp(buf, clp->v8c_name) == 0)
+			break;
+	}
+
+	if (clp == NULL) {
+		mdb_warn("%p: didn't find expected class\n", addr);
+		return (DCMD_ERR);
+	}
+
+	off = clp->v8c_end + (idx * sizeof (uintptr_t)) - 1;
+	if (read_heap_ptr(valp, addr, off) != 0) {
+		mdb_warn("%p: failed to read from %p\n", addr, addr + off);
+		return (DCMD_ERR);
+	}
+
+	return (DCMD_OK);
 }
 
 /*
@@ -2267,25 +2397,6 @@ jsfunc_name(uintptr_t funcinfop, char **bufp, size_t *lenp)
 /*
  * JavaScript-level object printing
  */
-typedef struct jsobj_print {
-	char **jsop_bufp;
-	size_t *jsop_lenp;
-	int jsop_indent;
-	uint64_t jsop_depth;
-	boolean_t jsop_printaddr;
-	uintptr_t jsop_baseaddr;
-	int jsop_nprops;
-	const char *jsop_member;
-	boolean_t jsop_found;
-	boolean_t jsop_descended;
-} jsobj_print_t;
-
-static int jsobj_print_number(uintptr_t, jsobj_print_t *);
-static int jsobj_print_oddball(uintptr_t, jsobj_print_t *);
-static int jsobj_print_jsobject(uintptr_t, jsobj_print_t *);
-static int jsobj_print_jsarray(uintptr_t, jsobj_print_t *);
-static int jsobj_print_jsfunction(uintptr_t, jsobj_print_t *);
-static int jsobj_print_jsdate(uintptr_t, jsobj_print_t *);
 
 static int
 jsobj_print(uintptr_t addr, jsobj_print_t *jsop)
@@ -2812,63 +2923,22 @@ err:
 }
 
 /*
- * Access an internal field of a V8 object.  V8 allows implementers (like Node)
- * to store pointer-sized values into internal fields within V8 heap objects.
- * Implementors access these values by 0-based index (e.g., SetInternalField(0,
- * value)).  These values are stored as an array directly after the last actual
- * C++ field in the C++ object.
- *
- * Node uses internal fields to refer to handles.  For example, a socket's C++
- * HandleWrap object is typically stored as internal field 0 in the JavaScript
- * Socket object.  Similarly, the native-heap-allocated chunk of memory
- * associated with a Node Buffer is referenced by field 0 in the External array
- * pointed-to by the Node Buffer JSObject.
+ * Access an internal field of a V8 object.
  */
 /* ARGSUSED */
 static int
 dcmd_v8internal(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 {
-	char *bufp;
-	size_t len;
-	ssize_t off;
-	uint8_t type;
 	uintptr_t idx;
-	uintptr_t *fieldaddr;
-
-	v8_class_t *clp;
-	v8_field_t *flp;
-	char buf[256];
+	uintptr_t fieldaddr;
 
 	if (mdb_getopts(argc, argv, NULL) != argc - 1 ||
 	    argv[argc - 1].a_type != MDB_TYPE_STRING)
 		return (DCMD_USAGE);
 
 	idx = mdb_strtoull(argv[argc - 1].a_un.a_str);
-
-	bufp = buf;
-	len = sizeof (buf);
-	if (obj_jstype(addr, &bufp, &len, &type) != 0)
+	if (obj_v8internal(addr, idx, &fieldaddr) != 0)
 		return (DCMD_ERR);
-	if (type == 0) {
-		mdb_warn("%p: unsupported type\n", addr);
-		return (DCMD_ERR);
-	}
-
-	for (clp = v8_classes; clp != NULL; clp = clp->v8c_next) {
-		if (strcmp(buf, clp->v8c_name) == 0)
-			break;
-	}
-
-	if (clp == NULL) {
-		mdb_warn("%p: didn't find expected class\n", addr);
-		return (DCMD_ERR);
-	}
-
-	off = clp->v8c_end + (idx * sizeof (uintptr_t)) - 1;
-	if (read_heap_ptr(&fieldaddr, addr, off) != 0) {
-		mdb_warn("%p: failed to read from %p\n", addr, addr + off);
-		return (DCMD_ERR);
-	}
 
 	printf("%p\n", fieldaddr);
 	return (DCMD_OK);
@@ -4192,74 +4262,68 @@ dcmd_findjsobjects(uintptr_t addr,
 	return (DCMD_OK);
 }
 
+/*
+ * Given a Node Buffer object, print out details about it.  With "-a", just
+ * print the address.
+ */
+/* ARGSUSED */
+static int
+dcmd_nodebuffer(uintptr_t addr, uint_t flags, int argc,
+    const mdb_arg_t *argv)
+{
+	boolean_t opt_f = B_FALSE;
+	char buf[80];
+	char *bufp = &buf;
+	size_t len = sizeof (buf);
+	uintptr_t elts, rawbuf;
+
+	/*
+	 * The undocumented "-f" option allows users to override constructor
+	 * checks.
+	 */
+	if (mdb_getopts(argc, argv,
+	    'f', MDB_OPT_SETBITS, B_TRUE, &opt_f, NULL) != argc)
+		return (DCMD_USAGE);
+
+	if (!opt_f) {
+		if (obj_jsconstructor(addr, &bufp, &len, B_FALSE) != 0)
+			return (DCMD_ERR);
+
+		if (strcmp(buf, "Buffer") != 0) {
+			mdb_warn("%p does not appear to be a buffer\n", addr);
+			return (DCMD_ERR);
+		}
+	}
+
+	if (read_heap_ptr(&elts, addr, V8_OFF_JSOBJECT_ELEMENTS) != 0)
+		return (DCMD_ERR);
+
+	if (obj_v8internal(elts, 0, &rawbuf) != 0)
+		return (DCMD_ERR);
+
+	mdb_printf("%p\n", rawbuf);
+	return (DCMD_OK);
+}
+
 /* ARGSUSED */
 static int
 dcmd_jsconstructor(uintptr_t addr, uint_t flags, int argc,
     const mdb_arg_t *argv)
 {
 	boolean_t opt_v = B_FALSE;
-	uint8_t type;
-	uintptr_t map, consfunc, funcinfop;
 	char buf[80];
 	char *bufp;
-	size_t len;
-	const char *constype;
+	size_t len = sizeof (buf);
 
 	if (mdb_getopts(argc, argv, 'v', MDB_OPT_SETBITS, B_TRUE, &opt_v,
 	    NULL) != argc)
 		return (DCMD_USAGE);
 
-	if (!V8_IS_HEAPOBJECT(addr) ||
-	    read_typebyte(&type, addr) != 0 ||
-	    (type != V8_TYPE_JSOBJECT && type != V8_TYPE_JSARRAY)) {
-		mdb_warn("%p is not a JSObject\n", addr);
+	bufp = &buf;
+	if (obj_jsconstructor(addr, &bufp, &len, opt_v))
 		return (DCMD_ERR);
-	}
-
-	if (mdb_vread(&map, sizeof (map), addr + V8_OFF_HEAPOBJECT_MAP) == -1 ||
-	    mdb_vread(&consfunc, sizeof (consfunc),
-	    map + V8_OFF_MAP_CONSTRUCTOR) == -1) {
-		mdb_warn("unable to read object map\n");
-	    	return (DCMD_ERR);
-	}
-
-	if (read_typebyte(&type, consfunc) != 0)
-		return (DCMD_ERR);
-
-	constype = enum_lookup_str(v8_types, type, "");
-	if (strcmp(constype, "Oddball") == 0) {
-		char buf[16];
-		char *bufp = buf;
-		size_t len = sizeof (buf);
-		jsobj_print_t jsop;
-		bzero(&jsop, sizeof (jsop));
-		jsop.jsop_bufp = &bufp;
-		jsop.jsop_lenp = &len;
-		if (jsobj_print_oddball(consfunc, &jsop) != 0)
-			return (DCMD_ERR);
-		mdb_printf("%s\n", buf);
-		return (DCMD_OK);
-	}
-
-	if (strcmp(constype, "JSFunction") != 0) {
-		mdb_warn("constructor: expected JSFunction, found %s\n",
-		    constype);
-		return (DCMD_ERR);
-	}
-
-	if (read_heap_ptr(&funcinfop, consfunc, V8_OFF_JSFUNCTION_SHARED) != 0)
-		return (DCMD_ERR);
-
-	bufp = buf;
-	len = sizeof (buf);
-	if (jsfunc_name(funcinfop, &bufp, &len) != 0)
-		return (DCMD_ERR);
-
-	mdb_printf("%s", buf);
-	if (opt_v)
-		mdb_printf(" (JSFunction: %p)", consfunc);
-	mdb_printf("\n");
-
+	
+	mdb_printf("%s\n", buf);
 	return (DCMD_OK);
 }
 
@@ -4786,6 +4850,12 @@ walk_jsprop_step(mdb_walk_state_t *wsp)
  */
 
 static const mdb_dcmd_t v8_mdb_dcmds[] = {
+	/*
+	 * Commands to inspect Node-level state
+	 */
+	{ "nodebuffer", ":[-a]",
+		"print details about the given Node Buffer", dcmd_nodebuffer },
+
 	/*
 	 * Commands to inspect JavaScript-level state
 	 */
