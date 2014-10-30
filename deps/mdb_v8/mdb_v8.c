@@ -2035,10 +2035,16 @@ jsobj_properties(uintptr_t addr,
 	if (read_heap_array(ptr, &descs, &ndescs, UM_SLEEP) != 0)
 		goto err;
 
+	/*
+	 * For cases where property values are stored directly inside the object
+	 * ("fast properties"), we need to know the whole size of the object and
+	 * the number of properties in the object to calculate the correct
+	 * offset for each property.
+	 */
 	if (read_size(&size, addr) != 0)
 		size = 0;
 
-	if (mdb_vread(&ninprops, 1, map + V8_OFF_MAP_INOBJECT_PROPERTIES) == -1)
+	if (mdb_vread(&ninprops, ps, map + V8_OFF_MAP_INOBJECT_PROPERTIES) == -1)
 		goto err;
 
 	if (V8_PROP_IDX_CONTENT != -1 && V8_PROP_IDX_CONTENT < ndescs &&
@@ -2110,16 +2116,42 @@ jsobj_properties(uintptr_t addr,
 			continue;
 		}
 
+		/*
+		 * The "value" part of each property descriptor tells us whether
+		 * the property value is stored directly in the object or in the
+		 * related "props" array.
+		 */
 		val = V8_SMI_VALUE(val) - ninprops;
-
 		if (val < 0) {
-			/* property is stored directly in the object */
-			if (mdb_vread(&ptr, sizeof (ptr), addr + V8_OFF_HEAP(
-			    size + val * sizeof (uintptr_t))) == -1) {
+			uintptr_t propaddr;
+
+			/*
+			 * The property is stored directly inside the object.
+			 * In Node 0.10, "val - ninprops" is the (negative)
+			 * index of the property counted from the end of the
+			 * object.  In that context, -1 refers to the last
+			 * word in the object; -2 refers to the second-last
+			 * word, and so on.
+			 *
+			 * In Node 0.12, we get the 0-based index from the
+			 * first property inside the object by reading certain
+			 * bits from the property descriptor details word.
+			 * These constants are literal here because they're
+			 * literal in the V8 source itself.
+			 */
+			/* XXX */
+			if (v8_minor >= 26) {
+				val = V8_SMI_VALUE(
+				    (content[detidx] & 0x3ff00000) >> 20);
+				propaddr = addr + V8_OFF_HEAP(
+				    size - (ninprops - val) * ps);
+			} else {
+				propaddr = addr + V8_OFF_HEAP(size + val * ps);
+			}
+
+			if (mdb_vread(&ptr, sizeof (ptr), propaddr) == -1) {
 				v8_warn("object %p: failed to read in-object "
-				    "property at %p\n", addr, addr +
-				    V8_OFF_HEAP(size + val *
-				    sizeof (uintptr_t)));
+				    "property at %p", addr, propaddr);
 				continue;
 			}
 		} else {
