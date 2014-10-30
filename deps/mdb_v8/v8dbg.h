@@ -77,4 +77,14 @@
 #define	V8_DESC_ISFIELD(x)		\
 	((V8_SMI_VALUE(x) & V8_PROP_TYPE_MASK) == V8_PROP_TYPE_FIELD)
 
+/* XXX can we add postmortem metadata for this? */
+#define	V8_PROP_FIELDINDEX_SHIFT	20
+#define	V8_PROP_FIELDINDEX_SIZE		10
+#define	V8_PROP_FIELDINDEX_MASK		\
+    (((1U << V8_PROP_FIELDINDEX_SHIFT) << V8_PROP_FIELDINDEX_SIZE) - \
+    (1 << V8_PROP_FIELDINDEX_SHIFT))
+#define	V8_PROP_FIELDINDEX(value)	\
+    (V8_SMI_VALUE(((value) & V8_PROP_FIELDINDEX_MASK) >> \
+    V8_PROP_FIELDINDEX_SHIFT))
+
 #endif /* _V8DBG_H */
