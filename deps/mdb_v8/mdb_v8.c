@@ -2283,7 +2283,7 @@ jsobj_properties(uintptr_t addr,
 			 * literal in the V8 source itself.
 			 */
 			/* XXX */
-			if (v8_major == 3 || v8_minor >= 26) {
+			if (v8_major == 3 && v8_minor >= 26) {
 				val = V8_SMI_VALUE(
 				    (content[detidx] & 0x3ff00000) >> 20);
 				propaddr = addr + V8_OFF_HEAP(
