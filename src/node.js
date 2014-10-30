@@ -239,11 +239,19 @@
         er.domainThrown = true;
 
         if (!processHasUncaughtListener && domainStack.length === 1) {
-          domainStack.length = 0;
-          domainModule.active = process.domain = null;
+          // This is the top-most domain error handler, and there's no
+          // handler for 'uncaughtException' on the process, so it's ok
+          // to abort if --abort-uncaught-exception is used on the cmd line
+          // and the domain error handler throw an error.
+          process._canAbortOnUncaughtException = true;
           caught = domain.emit('error', er);
+          process._canAbortOnUncaughtException = false;
         } else {
-          // wrap this in a try/catch so we don't get infinite throwing
+          // This is not the top-most domain error handler, or there's
+          // a handler for the process' uncaughtException event. We want
+          // to catch the exception if the current domain error handler throws
+          // so that we can pass it to the upper-level domain error handler or
+          // to the process' uncaughtException handler
           try {
             // One of three things will happen here.
             //
@@ -281,7 +289,12 @@
           }
         }
       } else {
+        // There's no domain error handler left on the domains stack,
+        // so it's ok to abort if the uncaughtException handler throws
+        // and --abort-on-uncaught-exception has been set.
+        process._canAbortOnUncaughtException = true;
         caught = process.emit('uncaughtException', er);
+        process._canAbortOnUncaughtException = false;
       }
       // if someone handled it, then great.  otherwise, die in C++ land
       // since that means that we'll exit the process, emit the 'exit' event

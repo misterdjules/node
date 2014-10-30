@@ -904,22 +904,9 @@ Handle<Value> FromConstructorTemplate(Persistent<FunctionTemplate> t,
   return scope.Close(t->GetFunction()->NewInstance(argc, argv));
 }
 
-bool IsDomainActive() {
-  if (domain_symbol.IsEmpty())
-    domain_symbol = NODE_PSYMBOL("domain");
-
-  Local<Value> domain_v = process->Get(domain_symbol);
-
-  bool has_domain = domain_v->IsObject();
-  if (has_domain) {
-    Local<Object> domain = domain_v->ToObject();
-    assert(!domain.IsEmpty());
-    if (!domain->IsNull()) {
-      return true;
-    }
-  }
-
-  return false;
+bool CanAbortOnUncaughtException() {
+  Local<Value> _canAbortOnUncaughtException = process->Get(String::New("_canAbortOnUncaughtException"));
+  return _canAbortOnUncaughtException->BooleanValue();
 }
 
 Handle<Value> UsingDomains(const Arguments& args) {
@@ -944,7 +931,7 @@ Handle<Value> UsingDomains(const Arguments& args) {
   process_tickCallback.Dispose();  // Possibly already set by MakeCallback().
   process_tickCallback = Persistent<Function>::New(tdc);
 
-  node_isolate->SetAbortOnUncaughtExceptionHandler(IsDomainActive);
+  node_isolate->SetAbortOnUncaughtExceptionHandler(CanAbortOnUncaughtException);
 
   return Undefined();
 }
@@ -2456,6 +2443,8 @@ Handle<Object> SetupProcessObject(int argc, char *argv[]) {
 
   // pre-set _events object for faster emit checks
   process->Set(String::NewSymbol("_events"), Object::New());
+
+  process->Set(String::NewSymbol("_canAbortOnUncaughtException"), False());
 
   return process;
 }

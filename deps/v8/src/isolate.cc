@@ -1159,7 +1159,7 @@ void Isolate::DoThrow(Object* exception, MessageLocation* location) {
       if (fatal_exception_depth == 0 &&
           FLAG_abort_on_uncaught_exception &&
           (report_exception || can_be_caught_externally) &&
-          (!abort_on_uncaught_exception_handler_ || !abort_on_uncaught_exception_handler_())) {
+          (!abort_on_uncaught_exception_handler_ || abort_on_uncaught_exception_handler_())) {
         fatal_exception_depth++;
         fprintf(stderr, "%s\n\nFROM\n",
           *MessageHandler::GetLocalizedMessage(message_obj));
