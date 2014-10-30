@@ -2284,8 +2284,7 @@ jsobj_properties(uintptr_t addr,
 			 */
 			/* XXX */
 			if (v8_major == 3 && v8_minor >= 26) {
-				val = V8_SMI_VALUE(
-				    (content[detidx] & 0x3ff00000) >> 20);
+				val = V8_PROP_FIELDINDEX(content[detidx]);
 				propaddr = addr + V8_OFF_HEAP(
 				    size - (ninprops - val) * ps);
 			} else {
