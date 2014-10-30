@@ -109,6 +109,7 @@ Persistent<Object> process;
 static Persistent<Function> process_tickFromSpinner;
 static Persistent<Function> process_tickCallback;
 
+static Persistent<String> events_symbol;
 static Persistent<String> exports_symbol;
 
 static Persistent<String> errno_symbol;
@@ -125,7 +126,7 @@ static Persistent<String> fatal_exception_symbol;
 static Persistent<String> enter_symbol;
 static Persistent<String> exit_symbol;
 static Persistent<String> disposed_symbol;
-
+static Persistent<String> stack_symbol;
 
 static bool print_eval = false;
 static bool force_repl = false;
@@ -904,6 +905,128 @@ Handle<Value> FromConstructorTemplate(Persistent<FunctionTemplate> t,
   return scope.Close(t->GetFunction()->NewInstance(argc, argv));
 }
 
+static void ReportException(TryCatch &try_catch, bool show_line) {
+  HandleScope scope;
+
+  if (show_line) DisplayExceptionLine(try_catch);
+
+  node::Utf8Value trace(try_catch.StackTrace());
+
+  // range errors have a trace member set to undefined
+  if (trace.length() > 0 && !try_catch.StackTrace()->IsUndefined()) {
+    fprintf(stderr, "%s\n", *trace);
+  } else {
+    // this really only happens for RangeErrors, since they're the only
+    // kind that won't have all this info in the trace, or when non-Error
+    // objects are thrown manually.
+    Local<Value> er = try_catch.Exception();
+    bool isErrorObject = er->IsObject() &&
+      !(er->ToObject()->Get(String::New("message"))->IsUndefined()) &&
+      !(er->ToObject()->Get(String::New("name"))->IsUndefined());
+
+    if (isErrorObject) {
+      node::Utf8Value name(er->ToObject()->Get(String::New("name")));
+      fprintf(stderr, "%s: ", *name);
+    }
+
+    node::Utf8Value msg(!isErrorObject ? er
+                         : er->ToObject()->Get(String::New("message")));
+    fprintf(stderr, "%s\n", *msg);
+  }
+
+  fflush(stderr);
+}
+
+static void CallUncaughtExceptionHandler(Local<Value> uncaughtExceptionHandler,
+                                         v8::Object* exception) {
+  if (uncaughtExceptionHandler->IsFunction()) {
+    Local<Function> listener_f = Local<Function>::Cast(uncaughtExceptionHandler);
+    Local<Value> argv[] = { exception };
+
+    process->Set(String::New("_emittingTopLevelDomainError"), False());
+    process->Set(String::New("_callingUncaughtException"), True());
+
+    TryCatch toplevel_domain_try_catch;
+
+    listener_f->Call(process, ARRAY_SIZE(argv), argv);
+
+    if (toplevel_domain_try_catch.HasCaught()) {
+      ReportException(toplevel_domain_try_catch, true);
+      exit(8);
+    }
+  }
+}
+
+static void CallUncaughtExceptionHandlers(Local<Value> uncaughtExceptionHandlers,
+                                          v8::Object* exception) {
+  Local<Object> uncaughtExceptionEvts = uncaughtExceptionHandlers->ToObject();
+  if (uncaughtExceptionEvts->IsObject()) {
+    Local<Array> uncaughtExceptionEvtsArray = uncaughtExceptionEvts->GetPropertyNames();
+    for (uint32_t i = 0; i < uncaughtExceptionEvtsArray->Length(); ++i) {
+      Local<Value> listener_v = uncaughtExceptionEvtsArray->Get(i);
+
+      CallUncaughtExceptionHandler(listener_v, exception);
+    }
+  }
+}
+
+static void HandleExceptionInTopLevelDomainHandler(v8::Object* exception) {
+  Local<Value> process_events_v = process->Get(events_symbol);
+  if (process_events_v->IsObject()) {
+    Local<Object> process_events = process_events_v->ToObject();
+    Local<Value> uncaughtExceptionEvts_v =
+      process_events->Get(String::New("uncaughtException"));
+
+    if (uncaughtExceptionEvts_v->IsArray()) {
+      CallUncaughtExceptionHandlers(uncaughtExceptionEvts_v, exception);
+    } else {
+      CallUncaughtExceptionHandler(uncaughtExceptionEvts_v, exception);
+    }
+  }
+}
+
+static bool IsDomainActive() {
+ HandleScope scope;
+
+ if (domain_symbol.IsEmpty())
+   domain_symbol = NODE_PSYMBOL("domain");
+
+ Local<Value> domain_v = process->Get(domain_symbol);
+
+ bool has_domain = domain_v->IsObject();
+ if (has_domain) {
+   Local<Object> domain = domain_v->ToObject();
+   assert(!domain.IsEmpty());
+   if (!domain->IsNull()) {
+     return true;
+   }
+ }
+
+ return false;
+}
+
+static bool OnUncaughtException(v8::Object* exception,
+                         bool flag_abort_on_uncaught) {
+
+  Local<Value> _emittingTopLevelDomainError =
+    process->Get(String::New("_emittingTopLevelDomainError"));
+
+  if (flag_abort_on_uncaught) {
+    if (_emittingTopLevelDomainError->BooleanValue()) {
+      return false;
+    }
+
+    if (!IsDomainActive()) {
+      return false;
+    }
+  } else {
+    if (_emittingTopLevelDomainError->BooleanValue()) {
+      HandleExceptionInTopLevelDomainHandler(exception);
+    }
+  }
+
+  return true;
+}
 
 Handle<Value> UsingDomains(const Arguments& args) {
   HandleScope scope;
@@ -926,6 +1049,7 @@ Handle<Value> UsingDomains(const Arguments& args) {
   process->Set(String::New("_currentTickHandler"), ndt);
   process_tickCallback.Dispose();  // Possibly already set by MakeCallback().
   process_tickCallback = Persistent<Function>::New(tdc);
+
   return Undefined();
 }
 
@@ -1249,39 +1373,6 @@ void DisplayExceptionLine (TryCatch &try_catch) {
     }
     fputc('\n', stderr);
   }
-}
-
-
-static void ReportException(TryCatch &try_catch, bool show_line) {
-  HandleScope scope;
-
-  if (show_line) DisplayExceptionLine(try_catch);
-
-  node::Utf8Value trace(try_catch.StackTrace());
-
-  // range errors have a trace member set to undefined
-  if (trace.length() > 0 && !try_catch.StackTrace()->IsUndefined()) {
-    fprintf(stderr, "%s\n", *trace);
-  } else {
-    // this really only happens for RangeErrors, since they're the only
-    // kind that won't have all this info in the trace, or when non-Error
-    // objects are thrown manually.
-    Local<Value> er = try_catch.Exception();
-    bool isErrorObject = er->IsObject() &&
-      !(er->ToObject()->Get(String::New("message"))->IsUndefined()) &&
-      !(er->ToObject()->Get(String::New("name"))->IsUndefined());
-
-    if (isErrorObject) {
-      node::Utf8Value name(er->ToObject()->Get(String::New("name")));
-      fprintf(stderr, "%s: ", *name);
-    }
-
-    node::Utf8Value msg(!isErrorObject ? er
-                         : er->ToObject()->Get(String::New("message")));
-    fprintf(stderr, "%s\n", *msg);
-  }
-
-  fflush(stderr);
 }
 
 // Executes a str within the current v8 context.
@@ -1944,15 +2035,18 @@ void FatalException(TryCatch &try_catch) {
   // this will return true if the JS layer handled it, false otherwise
   Local<Value> caught = fatal_f->Call(process, ARRAY_SIZE(argv), argv);
 
-  if (fatal_try_catch.HasCaught()) {
-    // the fatal exception function threw, so we must exit
-    ReportException(fatal_try_catch, true);
-    exit(7);
-  }
+  Local<Value> callingUncaughtException_v = process->Get(String::New("_callingUncaughtException"));
+  if (!callingUncaughtException_v->BooleanValue()) {
+    if (fatal_try_catch.HasCaught()) {
+      // the fatal exception function threw, so we must exit
+      ReportException(fatal_try_catch, true);
+      exit(7);
+    }
 
-  if (false == caught->BooleanValue()) {
-    ReportException(try_catch, true);
-    exit(8);
+    if (false == caught->BooleanValue()) {
+      ReportException(try_catch, true);
+      exit(8);
+    }
   }
 }
 
@@ -2435,7 +2529,11 @@ Handle<Object> SetupProcessObject(int argc, char *argv[]) {
   process->Set(String::NewSymbol("_tickInfoBox"), info_box);
 
   // pre-set _events object for faster emit checks
-  process->Set(String::NewSymbol("_events"), Object::New());
+  if (events_symbol.IsEmpty())
+    events_symbol = NODE_PSYMBOL("_events");
+  process->Set(events_symbol, Object::New());
+
+  process->Set(String::NewSymbol("_emittingTopLevelDomainError"), False());
 
   return process;
 }
@@ -2959,6 +3057,7 @@ char** Init(int argc, char *argv[]) {
   // Fetch a reference to the main isolate, so we have a reference to it
   // even when we need it to access it from another (debugger) thread.
   node_isolate = Isolate::GetCurrent();
+  node_isolate->SetOnUncaughtException(OnUncaughtException);
 
   // If the --debug flag was specified then initialize the debug thread.
   if (use_debug_agent) {
@@ -3019,7 +3118,7 @@ void EmitExit(v8::Handle<v8::Object> process_l) {
   TryCatch try_catch;
   emit->Call(process_l, 2, args);
   if (try_catch.HasCaught()) {
-    FatalException(try_catch);
+    ReportException(try_catch, true);
   }
 }
 

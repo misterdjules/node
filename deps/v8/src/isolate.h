@@ -361,6 +361,8 @@ class Isolate {
   // PerIsolateThreadData work on some older versions of gcc.
   class ThreadDataTable;
   class EntryStackItem;
+
+  typedef bool (*on_uncaught_exception_handler_t)(Object* exception, bool flag_abort_on_uncaught);
  public:
   ~Isolate();
 
@@ -691,6 +693,8 @@ class Isolate {
       bool capture,
       int frame_limit,
       StackTrace::StackTraceOptions options);
+
+  void SetOnUncaughtException(on_uncaught_exception_handler_t handler);
 
   // Tells whether the current context has experienced an out of memory
   // exception.
@@ -1291,6 +1295,8 @@ class Isolate {
 
   DeferredHandles* deferred_handles_head_;
   OptimizingCompilerThread optimizing_compiler_thread_;
+
+  on_uncaught_exception_handler_t on_uncaught_exception_handler_;
 
   friend class ExecutionAccess;
   friend class HandleScopeImplementer;

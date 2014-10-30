@@ -2856,7 +2856,8 @@ class V8EXPORT Isolate {
    * restored when exiting.  Re-entering an isolate is allowed.
    */
   void Enter();
-
+  typedef bool (*on_uncaught_exception_handler_t)(Object* exception, bool flag_abort_on_uncaught);
+  void SetOnUncaughtException(on_uncaught_exception_handler_t handler);
   /**
    * Exits this isolate by restoring the previously entered one in the
    * current thread.  The isolate may still stay the same, if it was
