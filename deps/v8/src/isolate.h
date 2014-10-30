@@ -692,6 +692,8 @@ class Isolate {
       int frame_limit,
       StackTrace::StackTraceOptions options);
 
+  void SetAbortOnUncaughtExceptionHandler(v8::Isolate::abort_on_uncaught_exception_handler_t handler);
+
   // Tells whether the current context has experienced an out of memory
   // exception.
   bool is_out_of_memory();
@@ -1291,6 +1293,8 @@ class Isolate {
 
   DeferredHandles* deferred_handles_head_;
   OptimizingCompilerThread optimizing_compiler_thread_;
+
+  v8::Isolate::abort_on_uncaught_exception_handler_t abort_on_uncaught_exception_handler_;
 
   friend class ExecutionAccess;
   friend class HandleScopeImplementer;

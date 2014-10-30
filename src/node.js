@@ -221,6 +221,7 @@
     // and exit if there are no listeners.
     process._fatalException = function(er) {
       var caught = false;
+      var processHasUncaughtListener = process.listeners('uncaughtException').length > 0;
       if (process.domain) {
         var domain = process.domain;
         var domainModule = NativeModule.require('domain');
@@ -236,37 +237,48 @@
 
         er.domain = domain;
         er.domainThrown = true;
-        // wrap this in a try/catch so we don't get infinite throwing
-        try {
-          // One of three things will happen here.
-          //
-          // 1. There is a handler, caught = true
-          // 2. There is no handler, caught = false
-          // 3. It throws, caught = false
-          //
-          // If caught is false after this, then there's no need to exit()
-          // the domain, because we're going to crash the process anyway.
-          caught = domain.emit('error', er);
 
-          // Exit all domains on the stack.  Uncaught exceptions end the
-          // current tick and no domains should be left on the stack
-          // between ticks.
-          var domainModule = NativeModule.require('domain');
+        if (!processHasUncaughtListener && domainStack.length === 1) {
           domainStack.length = 0;
           domainModule.active = process.domain = null;
-        } catch (er2) {
-          // The domain error handler threw!  oh no!
-          // See if another domain can catch THIS error,
-          // or else crash on the original one.
-          // If the user already exited it, then don't double-exit.
-          if (domain === domainModule.active)
-            domainStack.pop();
-          if (domainStack.length) {
-            var parentDomain = domainStack[domainStack.length - 1];
-            process.domain = domainModule.active = parentDomain;
+          caught = domain.emit('error', er);
+        } else {
+          // wrap this in a try/catch so we don't get infinite throwing
+          try {
+            // One of three things will happen here.
+            //
+            // 1. There is a handler, caught = true
+            // 2. There is no handler, caught = false
+            // 3. It throws, caught = false
+            //
+            // If caught is false after this, then there's no need to exit()
+            // the domain, because we're going to crash the process anyway.
+            caught = domain.emit('error', er);
+
+            // Exit all domains on the stack.  Uncaught exceptions end the
+            // current tick and no domains should be left on the stack
+            // between ticks.
+            var domainModule = NativeModule.require('domain');
+            domainStack.length = 0;
+            domainModule.active = process.domain = null;
+          } catch (er2) {
+            // The domain error handler threw!  oh no!
+            // See if another domain can catch THIS error,
+            // or else crash on the original one.
+            // If the user already exited it, then don't double-exit.
+            if (domain === domainModule.active)
+              domainStack.pop();
+
+            if (domainStack.length) {
+              var parentDomain = domainStack[domainStack.length - 1];
+              process.domain = domainModule.active = parentDomain;
+            } else {
+              domainModule.active = process.domain = null;
+              caught = false;
+            }
+
             caught = process._fatalException(er2);
-          } else
-            caught = false;
+          }
         }
       } else {
         caught = process.emit('uncaughtException', er);

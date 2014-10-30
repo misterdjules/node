@@ -904,6 +904,23 @@ Handle<Value> FromConstructorTemplate(Persistent<FunctionTemplate> t,
   return scope.Close(t->GetFunction()->NewInstance(argc, argv));
 }
 
+bool IsDomainActive() {
+  if (domain_symbol.IsEmpty())
+    domain_symbol = NODE_PSYMBOL("domain");
+
+  Local<Value> domain_v = process->Get(domain_symbol);
+
+  bool has_domain = domain_v->IsObject();
+  if (has_domain) {
+    Local<Object> domain = domain_v->ToObject();
+    assert(!domain.IsEmpty());
+    if (!domain->IsNull()) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 Handle<Value> UsingDomains(const Arguments& args) {
   HandleScope scope;
@@ -926,6 +943,9 @@ Handle<Value> UsingDomains(const Arguments& args) {
   process->Set(String::New("_currentTickHandler"), ndt);
   process_tickCallback.Dispose();  // Possibly already set by MakeCallback().
   process_tickCallback = Persistent<Function>::New(tdc);
+
+  node_isolate->SetAbortOnUncaughtExceptionHandler(IsDomainActive);
+
   return Undefined();
 }
 
