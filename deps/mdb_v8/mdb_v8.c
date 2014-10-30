@@ -1883,6 +1883,121 @@ jsobj_is_hole(uintptr_t addr)
 	return (jsobj_is_oddball(addr, "hole"));
 }
 
+/*
+ * Iterate the properties of a JavaScript object "addr".
+ * 
+ * Every heap object refers to a Map that describes how that heap object is laid
+ * out.  The Map includes information like the constructor function used to
+ * create the object, how many bytes each object uses, and how many properties
+ * are stored inside the object.  (A single Map object can be shared by many
+ * objects of the same general type, which is why this information is encoded by
+ * reference rather than contained in each object.)
+ *
+ * V8 knows about lots of different kinds of properties:
+ *
+ *    o properties with numeric names (e.g., array elements)
+ *    o dictionary properties
+ *    o "fast" properties stored inside each object, much like a C struct
+ *    o properties stored in the separate "properties" array
+ *    o getters, setters, and other magic (not supported by this module)
+ *
+ * While property lookup in JavaScript involves traversing an object's prototype
+ * chain, this module only iterates the properties local to the object itself.
+ *
+ *
+ * Numeric properties
+ *
+ * Properties having numeric indexes are stored in the "elements" array attached
+ * to each object.  Objects with numeric properties can also have other
+ * properties.
+ * 
+ *
+ * Dictionary properties
+ *
+ * An object with dictionary properties is identified by one of the bits in
+ * "bitfield3" in the object's Map.  For details on slow properties, see
+ * read_heap_dict().
+ *
+ *
+ * Other properties
+ *
+ * The Map object refers to an array of "instance descriptors".  This array has
+ * a few metadata entries at the front, followed by groups of three entries for
+ * each property.  In Node v0.10 and later, it looks roughly like this:
+ *
+ *               +--------------+         +----------------------+
+ *               | JSObject     |    +--> | Map                  |
+ *               +--------------|    |    +----------------------+
+ *               | map          | ---+    | ...                  |
+ *               | ...          |         | instance_descriptors | --+
+ *  in-object    | [prop 0 val] |         | ...                  |   |
+ *  properties   | [prop 1 val] |         +----------------------+   |
+ *  (not for all | ...          |                                    |
+ *  objects)     | [prop N val] |                                    |
+ *               +--------------+                                    |
+ *                 +------------------------------------------------+
+ *                 |
+ *                 +----> +------------------------------+
+ *                        | FixedArray                   |
+ *                        +------------------------------+
+ *                        | ...                          |
+ *                        | prop 0 "key" descriptor      |
+ *                        | prop 0 "details" descriptor  |
+ *                        | prop 0 "value" descriptor    |
+ *                        | prop 1 "key" descriptor      |
+ *                        | prop 1 "details" descriptor  |
+ *                        | prop 1 "value" descriptor    |
+ *                        | ...                          |
+ *                        | prop N "key" descriptor      |
+ *                        | prop N "details" descriptor  |
+ *                        | prop N "value" descriptor    |
+ *                        +------------------------------+
+ *
+ * In versions of Node prior to 0.10, there's an extra level of indirection.
+ * The Map refers to a "transitions" array, which has an entry that points to
+ * the instance descriptors.  In both cases, the descriptors look roughly the
+ * same.
+ *
+ * Each property is described by three pointer-sized entries:
+ *
+ *    o key: a string denoting the name of the property
+ *    o details: a bitfield describing attributes of this property
+ *    o value: an integer describing where this property's value is stored
+ *
+ * "key" is straightforward: it's just the name of the property as the
+ * JavaScript programmer knows it.
+ *
+ * In versions prior to Node 0.12, "value" is an integer.  If "value" is less
+ * than the number of properties stored inside the object (which is also
+ * recorded in the Map), then it denotes which of the in-object property value
+ * slots (shown above inside the JSObject object) stores the value for this
+ * property.  If "value" is greater than the number of properties stored inside
+ * the object, then it denotes which index into the separate "properties" array
+ * (a separate field in the JSObject, not shown above) contains the value for
+ * this property.
+ *
+ * In Node 0.12, for properties that are stored inside the object, the offset is
+ * obtained not using "value", but using a bitfield from the "details" part of
+ * the descriptor.
+ *
+ * Terminology notes: it's important to keep straight the different senses of
+ * "object" and "property" here.  We use "JavaScript objects" to refer to the
+ * things that JavaScript programmers would call objects, including instances of
+ * Object and Array and subclasses of those.  These are a subset of V8 heap
+ * objects, since V8 uses its heap to manage lots of other objects that
+ * JavaScript programmers don't think about.  This function iterates JavaScript
+ * properties of these JavaScript objects, not internal properties of heap
+ * objects in general.
+ *
+ * Relatedly, while JavaScript programmers frequently interchange the notions of
+ * property names, property values, and property configurations (e.g., getters
+ * and setters, read-only or not, hidden or not), these are all distinct in the
+ * implementation of the VM, and "property" typically refers to the whole
+ * configuration, which may include a way to get the property name and value.
+ *
+ * The canonical source of the information used here is the implementation of
+ * property lookup in the V8 source code, currently in Object::GetProperty.
+ */
 static int
 jsobj_properties(uintptr_t addr,
     int (*func)(const char *, uintptr_t, void *), void *arg)
@@ -1897,8 +2012,9 @@ jsobj_properties(uintptr_t addr,
 	ssize_t off;
 
 	/*
-	 * Objects have either "fast" properties represented with a FixedArray
-	 * or slow properties represented with a Dictionary.
+	 * First, check if the JSObject's "properties" field is a FixedArray.
+	 * If not, then this is something we don't know how to deal with, and
+	 * we'll just pass the caller a NULL value.
 	 */
 	if (mdb_vread(&ptr, ps, addr + V8_OFF_JSOBJECT_PROPERTIES) == -1)
 		return (-1);
@@ -1907,30 +2023,24 @@ jsobj_properties(uintptr_t addr,
 		return (-1);
 
 	if (type != V8_TYPE_FIXEDARRAY) {
-		/*
-		 * If our properties aren't a fixed array, we'll emit a member
-		 * that contains the type name, but with a NULL value.
-		 */
 		char buf[256];
-
 		(void) mdb_snprintf(buf, sizeof (buf), "<%s>",
 		    enum_lookup_str(v8_types, type, "unknown"));
-
 		return (func(buf, NULL, arg));
 	}
 
 	/*
-	 * To iterate the properties, we need to examine the instance
-	 * descriptors of the associated Map object.  Depending on the version
-	 * of V8, this might be found directly from the map -- or indirectly
-	 * via the transitions array.
+	 * As described above, we need the Map to figure out how to iterate the
+	 * properties for this object.
 	 */
 	if (mdb_vread(&map, ps, addr + V8_OFF_HEAPOBJECT_MAP) == -1)
 		goto err;
 
 	/*
 	 * Check to see if our elements member is an array and non-zero; if
-	 * so, it contains numerically-named properties.
+	 * so, it contains numerically-named properties.  Whether or not there
+	 * are any numerically-named properties, there may be other kinds of
+	 * properties.
 	 */
 	if (V8_ELEMENTS_KIND_SHIFT != -1 &&
 	    read_heap_ptr(&elements, addr, V8_OFF_JSOBJECT_ELEMENTS) == 0 &&
@@ -1976,6 +2086,12 @@ jsobj_properties(uintptr_t addr,
 	if (V8_DICT_SHIFT != -1) {
 		uintptr_t bit_field3;
 
+		/*
+		 * If dictionary properties are supported (the V8_DICT_SHIFT
+		 * offset is not -1), then bitfield 3 tells us if the properties
+		 * for this object are stored in "properties" field of the
+		 * object using a Dictionary representation.
+		 */
 		if (mdb_vread(&bit_field3, sizeof (bit_field3),
 		    map + V8_OFF_MAP_BIT_FIELD3) == -1)
 			goto err;
@@ -2008,7 +2124,12 @@ jsobj_properties(uintptr_t addr,
 	if (read_heap_array(ptr, &props, &nprops, UM_SLEEP) != 0)
 		goto err;
 
-	if ((off = V8_OFF_MAP_INSTANCE_DESCRIPTORS) == -1) {
+	/*
+	 * Check if we're looking at an older version of V8, where the instance
+	 * descriptors are stored not directly in the Map, but in the
+	 * "transitions" array that's stored in the Map.
+	 */
+	if (V8_OFF_MAP_INSTANCE_DESCRIPTORS == -1) {
 		if (V8_OFF_MAP_TRANSITIONS == -1 ||
 		    V8_TRANSITIONS_IDX_DESC == -1 ||
 		    V8_PROP_IDX_CONTENT != -1) {
@@ -2019,52 +2140,67 @@ jsobj_properties(uintptr_t addr,
 		}
 
 		off = V8_OFF_MAP_TRANSITIONS;
-	}
+		if (mdb_vread(&ptr, ps, map + off) == -1)
+			goto err;
 
-	if (mdb_vread(&ptr, ps, map + off) == -1)
-		goto err;
-
-	if (V8_OFF_MAP_INSTANCE_DESCRIPTORS == -1) {
 		if (read_heap_array(ptr, &trans, &ntrans, UM_SLEEP) != 0)
 			goto err;
 
 		ptr = trans[V8_TRANSITIONS_IDX_DESC];
 		mdb_free(trans, ntrans * sizeof (uintptr_t));
+	} else {
+		off = V8_OFF_MAP_INSTANCE_DESCRIPTORS;
+		if (mdb_vread(&ptr, ps, map + off) == -1)
+			goto err;
 	}
-
+	
+	/*
+	 * Either way, at this point "ptr" should refer to the descriptors
+	 * array.
+	 */
 	if (read_heap_array(ptr, &descs, &ndescs, UM_SLEEP) != 0)
 		goto err;
 
 	/*
 	 * For cases where property values are stored directly inside the object
 	 * ("fast properties"), we need to know the whole size of the object and
-	 * the number of properties in the object to calculate the correct
-	 * offset for each property.
+	 * the number of properties in the object in order to calculate the
+	 * correct offset for each property.
 	 */
 	if (read_size(&size, addr) != 0)
 		size = 0;
-
 	if (mdb_vread(&ninprops, ps, map + V8_OFF_MAP_INOBJECT_PROPERTIES) == -1)
-		goto err;
-
-	if (V8_PROP_IDX_CONTENT != -1 && V8_PROP_IDX_CONTENT < ndescs &&
-	    read_heap_array(descs[V8_PROP_IDX_CONTENT], &content,
-	    &ncontent, UM_SLEEP) != 0)
 		goto err;
 
 	if (V8_PROP_IDX_CONTENT == -1) {
 		/*
-		 * On node v0.8 and later, the content is not stored in an
-		 * orthogonal FixedArray, but rather with the descriptors.
+		 * On node v0.8 and later, the content is not stored in a
+		 * separate FixedArray, but rather with the descriptors.  The
+		 * number of actual properties is the length of the array minus
+		 * the first (non-property) elements divided by the number of
+		 * elements per property.
 		 */
 		content = descs;
 		ncontent = ndescs;
 		rndescs = ndescs > V8_PROP_IDX_FIRST ?
 		    (ndescs - V8_PROP_IDX_FIRST) / V8_PROP_DESC_SIZE : 0;
 	} else {
+		/*
+		 * On older versions, the content is stored in a separate array,
+		 * and there's one entry per property (rather than three).
+		 */
+		if (V8_PROP_IDX_CONTENT < ndescs &&
+		    read_heap_array(descs[V8_PROP_IDX_CONTENT], &content,
+		    &ncontent, UM_SLEEP) != 0)
+			goto err;
+
 		rndescs = ndescs - V8_PROP_IDX_FIRST;
 	}
 
+	/*
+	 * At this point, we've read all the pieces we need to process the list
+	 * of instance descriptors.
+	 */
 	for (ii = 0; ii < rndescs; ii++) {
 		uintptr_t keyidx, validx, detidx, baseidx;
 		char buf[1024];
@@ -2088,6 +2224,10 @@ jsobj_properties(uintptr_t addr,
 			detidx = baseidx + V8_PROP_DESC_DETAILS;
 		}
 
+		/*
+		 * Ignore cases where our understanding doesn't appear to match
+		 * what's here.
+		 */
 		if (detidx >= ncontent) {
 			v8_warn("property descriptor %d: detidx (%d) "
 			    "out of bounds for content array (length %d)\n",
@@ -2095,6 +2235,10 @@ jsobj_properties(uintptr_t addr,
 			continue;
 		}
 
+		/*
+		 * We only process fields.  There are other entries here
+		 * (notably: transitions) that we don't care about.
+		 */
 		if (!V8_DESC_ISFIELD(content[detidx]))
 			continue;
 
@@ -2109,7 +2253,6 @@ jsobj_properties(uintptr_t addr,
 			continue;
 
 		val = (intptr_t)content[validx];
-
 		if (!V8_IS_SMI(val)) {
 			v8_warn("object %p: property descriptor %d: value "
 			    "index value is not an SMI: %p\n", addr, ii, val);
@@ -2140,7 +2283,7 @@ jsobj_properties(uintptr_t addr,
 			 * literal in the V8 source itself.
 			 */
 			/* XXX */
-			if (v8_minor >= 26) {
+			if (v8_major == 3 || v8_minor >= 26) {
 				val = V8_SMI_VALUE(
 				    (content[detidx] & 0x3ff00000) >> 20);
 				propaddr = addr + V8_OFF_HEAP(
@@ -2155,7 +2298,9 @@ jsobj_properties(uintptr_t addr,
 				continue;
 			}
 		} else {
-			/* property should be in "props" array */
+			/*
+			 * The property is in the separate "props" array.
+			 */
 			if (val >= nprops) {
 				/*
 				 * This can happen when properties are deleted.
