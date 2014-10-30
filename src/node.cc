@@ -125,7 +125,7 @@ static Persistent<String> fatal_exception_symbol;
 static Persistent<String> enter_symbol;
 static Persistent<String> exit_symbol;
 static Persistent<String> disposed_symbol;
-
+static Persistent<String> stack_symbol;
 
 static bool print_eval = false;
 static bool force_repl = false;
@@ -904,6 +904,10 @@ Handle<Value> FromConstructorTemplate(Persistent<FunctionTemplate> t,
   return scope.Close(t->GetFunction()->NewInstance(argc, argv));
 }
 
+bool ShouldAbortOnUncaughtException() {
+  Local<Value> _emittingTopLevelDomainError = process->Get(String::New("_emittingTopLevelDomainError"));
+  return _emittingTopLevelDomainError->BooleanValue();
+}
 
 Handle<Value> UsingDomains(const Arguments& args) {
   HandleScope scope;
@@ -926,6 +930,9 @@ Handle<Value> UsingDomains(const Arguments& args) {
   process->Set(String::New("_currentTickHandler"), ndt);
   process_tickCallback.Dispose();  // Possibly already set by MakeCallback().
   process_tickCallback = Persistent<Function>::New(tdc);
+
+  node_isolate->SetShouldAbortOnUncaughtExceptionHandler(ShouldAbortOnUncaughtException);
+
   return Undefined();
 }
 
@@ -2436,6 +2443,8 @@ Handle<Object> SetupProcessObject(int argc, char *argv[]) {
 
   // pre-set _events object for faster emit checks
   process->Set(String::NewSymbol("_events"), Object::New());
+
+  process->Set(String::NewSymbol("_emittingTopLevelDomainError"), False());
 
   return process;
 }

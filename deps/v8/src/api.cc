@@ -5565,6 +5565,10 @@ void Isolate::Enter() {
   isolate->Enter();
 }
 
+void Isolate::SetShouldAbortOnUncaughtExceptionHandler(should_abort_on_uncaught_exception_handler_t handler) {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
+  isolate->SetShouldAbortOnUncaughtExceptionHandler(handler);
+}
 
 void Isolate::Exit() {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);

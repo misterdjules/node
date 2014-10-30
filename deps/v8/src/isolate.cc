@@ -1158,7 +1158,8 @@ void Isolate::DoThrow(Object* exception, MessageLocation* location) {
       // print a user-friendly stack trace (not an internal one).
       if (fatal_exception_depth == 0 &&
           FLAG_abort_on_uncaught_exception &&
-          (report_exception || can_be_caught_externally)) {
+          (report_exception || can_be_caught_externally) &&
+          (!should_abort_on_uncaught_exception_handler_ || should_abort_on_uncaught_exception_handler_())) {
         fatal_exception_depth++;
         fprintf(stderr, "%s\n\nFROM\n",
           *MessageHandler::GetLocalizedMessage(message_obj));
@@ -1339,6 +1340,9 @@ void Isolate::SetCaptureStackTraceForUncaughtExceptions(
   stack_trace_for_uncaught_exceptions_options_ = options;
 }
 
+void Isolate::SetShouldAbortOnUncaughtExceptionHandler(v8::Isolate::should_abort_on_uncaught_exception_handler_t handler) {
+  should_abort_on_uncaught_exception_handler_ = handler;
+}
 
 bool Isolate::is_out_of_memory() {
   if (has_pending_exception()) {
@@ -1534,7 +1538,8 @@ Isolate::Isolate()
       date_cache_(NULL),
       context_exit_happened_(false),
       deferred_handles_head_(NULL),
-      optimizing_compiler_thread_(this) {
+      optimizing_compiler_thread_(this),
+      should_abort_on_uncaught_exception_handler_(0) {
   TRACE_ISOLATE(constructor);
 
   memset(isolate_addresses_, 0,
