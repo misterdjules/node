@@ -158,6 +158,7 @@ static intptr_t	V8_TRANSITIONS_IDX_DESC;
 
 static intptr_t V8_TYPE_JSOBJECT = -1;
 static intptr_t V8_TYPE_JSARRAY = -1;
+static intptr_t V8_TYPE_JSFUNCTION = -1;
 static intptr_t V8_TYPE_FIXEDARRAY = -1;
 
 static intptr_t V8_ELEMENTS_KIND_SHIFT;
@@ -553,6 +554,9 @@ autoconfigure(v8_cfg_t *cfgp)
 		if (strcmp(ep->v8e_name, "JSArray") == 0)
 			V8_TYPE_JSARRAY = ep->v8e_value;
 
+		if (strcmp(ep->v8e_name, "JSFunction") == 0)
+			V8_TYPE_JSFUNCTION = ep->v8e_value;
+
 		if (strcmp(ep->v8e_name, "FixedArray") == 0)
 			V8_TYPE_FIXEDARRAY = ep->v8e_value;
 	}
@@ -564,6 +568,11 @@ autoconfigure(v8_cfg_t *cfgp)
 
 	if (V8_TYPE_JSARRAY == -1) {
 		mdb_warn("couldn't find JSArray type\n");
+		failed++;
+	}
+
+	if (V8_TYPE_JSFUNCTION == -1) {
+		mdb_warn("couldn't find JSFunction type\n");
 		failed++;
 	}
 
