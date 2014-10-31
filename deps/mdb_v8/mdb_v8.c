@@ -1255,8 +1255,7 @@ read_heap_dict(uintptr_t addr,
 			bufp = buf;
 			len = sizeof (buf);
 
-			if (jsstr_print(dict[i], JSSTR_QUOTED,
-			    &bufp, &len) != 0)
+			if (jsstr_print(dict[i], JSSTR_NUDE, &bufp, &len) != 0)
 				goto out;
 		}
 
@@ -3642,6 +3641,7 @@ typedef struct findjsobjects_instance {
 typedef struct findjsobjects_obj {
 	findjsobjects_prop_t *fjso_props;
 	findjsobjects_prop_t *fjso_last;
+	jspropinfo_t fjso_propinfo;
 	size_t fjso_nprops;
 	findjsobjects_instance_t fjso_instances;
 	int fjso_ninstances;
@@ -3910,7 +3910,8 @@ findjsobjects_range(findjsobjects_state_t *fjs, uintptr_t addr, uintptr_t size)
 
 		if (type == jsobject) {
 			if (jsobj_properties(addr,
-			    findjsobjects_prop, fjs, NULL) != 0) {
+			    findjsobjects_prop, fjs,
+			    &fjs->fjs_current->fjso_propinfo) != 0) {
 				findjsobjects_free(fjs->fjs_current);
 				fjs->fjs_current = NULL;
 				continue;
@@ -4203,6 +4204,24 @@ findjsobjects_match_constructor(findjsobjects_obj_t *obj,
 		mdb_printf("%p\n", obj->fjso_instances.fjsi_addr);
 }
 
+static void
+findjsobjects_match_kind(findjsobjects_obj_t *obj, const char *propkind)
+{
+	jspropinfo_t p = obj->fjso_propinfo;
+
+	if (((p & JPI_NUMERIC) != 0 && strstr(propkind, "numeric") != NULL) ||
+	    ((p & JPI_DICT) != 0 && strstr(propkind, "dict") != NULL) ||
+	    ((p & JPI_INOBJECT) != 0 && strstr(propkind, "inobject") != NULL) ||
+	    ((p & JPI_PROPS) != 0 && strstr(propkind, "props") != NULL) ||
+	    ((p & JPI_HASTRANSITIONS) != 0 &&
+	    strstr(propkind, "transitions") != NULL) ||
+	    ((p & JPI_HASCONTENT) != 0 && strstr(propkind, "content") != NULL) ||
+	    ((p & JPI_SKIPPED) != 0 && strstr(propkind, "skipped") != NULL) ||
+	    ((p & JPI_BADLAYOUT) != 0 && strstr(propkind, "badlayout") != NULL)) {
+		mdb_printf("%p\n", obj->fjso_instances.fjsi_addr);
+	}
+}
+
 static int
 findjsobjects_match(findjsobjects_state_t *fjs, uintptr_t addr,
     uint_t flags, void (*func)(findjsobjects_obj_t *, const char *),
@@ -4321,6 +4340,7 @@ dcmd_findjsobjects(uintptr_t addr,
 	boolean_t references = B_FALSE, listlike = B_FALSE;
 	const char *propname = NULL;
 	const char *constructor = NULL;
+	const char *propkind = NULL;
 
 	fjs.fjs_verbose = B_FALSE;
 	fjs.fjs_brk = B_FALSE;
@@ -4331,6 +4351,7 @@ dcmd_findjsobjects(uintptr_t addr,
 	    'a', MDB_OPT_SETBITS, B_TRUE, &fjs.fjs_allobjs,
 	    'b', MDB_OPT_SETBITS, B_TRUE, &fjs.fjs_brk,
 	    'c', MDB_OPT_STR, &constructor,
+	    'k', MDB_OPT_STR, &propkind,
 	    'l', MDB_OPT_SETBITS, B_TRUE, &listlike,
 	    'm', MDB_OPT_SETBITS, B_TRUE, &fjs.fjs_marking,
 	    'p', MDB_OPT_STR, &propname,
@@ -4411,8 +4432,10 @@ dcmd_findjsobjects(uintptr_t addr,
 	}
 
 	if (listlike && !(flags & DCMD_ADDRSPEC)) {
-		if (propname != NULL || constructor != NULL) {
-			char opt = propname != NULL ? 'p' : 'c';
+		if (propname != NULL || constructor != NULL ||
+		    propkind != NULL) {
+			char opt = propname != NULL ? 'p' :
+			    propkind != NULL ? 'k' :'c';
 
 			mdb_warn("cannot specify -l with -%c; instead, pipe "
 			    "output of ::findjsobjects -%c to "
@@ -4425,9 +4448,10 @@ dcmd_findjsobjects(uintptr_t addr,
 	}
 
 	if (propname != NULL) {
-		if (constructor != NULL) {
+		if (constructor != NULL || propkind != NULL) {
 			mdb_warn("cannot specify both a property name "
-			    "and a constructor\n");
+			    "and a %s\n", constructor != NULL ?
+			    "constructor" : "property kind");
 			return (DCMD_ERR);
 		}
 
@@ -4436,8 +4460,19 @@ dcmd_findjsobjects(uintptr_t addr,
 	}
 
 	if (constructor != NULL) {
+		if (propkind != NULL) {
+			mdb_warn("cannot specify both a constructor name "
+			    "and a property kind\n");
+			return (DCMD_ERR);
+		}
+
 		return (findjsobjects_match(&fjs, addr, flags,
 		    findjsobjects_match_constructor, constructor));
+	}
+
+	if (propkind != NULL) {
+		return (findjsobjects_match(&fjs, addr, flags,
+		    findjsobjects_match_kind, propkind));
 	}
 
 	if (references && !(flags & DCMD_ADDRSPEC) &&
