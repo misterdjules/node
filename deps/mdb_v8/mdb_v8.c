@@ -641,6 +641,14 @@ again:
 	if (V8_OFF_MAP_BIT_FIELD2 == -1)
 		V8_OFF_MAP_BIT_FIELD2 = V8_OFF_MAP_INSTANCE_ATTRIBUTES + 3;
 
+	/*
+	 * "v8dbg_dict_shift" can have different fallback values depending on
+	 * what version of V8 we're on.
+	 */
+	if (v8_major > 3 || (v8_major == 3 && v8_minor >= 26)) {
+		V8_DICT_SHIFT = 22;
+	}
+
 	return (failed ? -1 : 0);
 }
 
@@ -2340,7 +2348,7 @@ jsobj_properties(uintptr_t addr,
 			 * literal in the V8 source itself.
 			 */
 			/* XXX */
-			if (v8_major == 3 && v8_minor >= 26) {
+			if (v8_major > 3 || (v8_major == 3 && v8_minor >= 26)) {
 				val = V8_PROP_FIELDINDEX(content[detidx]);
 				propaddr = addr + V8_OFF_HEAP(
 				    size - (ninprops - val) * ps);
