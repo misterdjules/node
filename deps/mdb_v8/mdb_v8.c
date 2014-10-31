@@ -429,6 +429,32 @@ static int read_typebyte(uint8_t *, uintptr_t);
 static int heap_offset(const char *, const char *, ssize_t *);
 static int jsfunc_name(uintptr_t, char **, size_t *);
 
+/*
+ * When iterating properties, it's useful to keep track of what kinds of
+ * properties were found.  This is useful for developers to identify objects of
+ * different kinds in order to debug them.
+ */
+typedef enum {
+	JPI_NONE = 0,
+
+	/*
+	 * Indicates how properties are stored in this object.  There can be
+	 * both numeric properties and some of the other kinds.
+	 */
+	JPI_NUMERIC   = 0x01,	/* numeric-named properties in "elements" */
+	JPI_DICT      = 0x02,	/* dictionary properties */
+	JPI_INOBJECT  = 0x04,	/* properties stored inside object */
+	JPI_PROPS     = 0x08,	/* "properties" array */
+
+	/* error-like cases */
+	JPI_SKIPPED   = 0x10,	/* some properties were skipped */
+	JPI_BADLAYOUT = 0x20,	/* we didn't recognize the layout at all */
+
+	/* fallback cases */
+	JPI_HASTRANSITIONS = 0x100,	/* found a separate transitions array */
+	JPI_HASCONTENT     = 0x200,	/* found a separate content array */
+} jspropinfo_t;
+
 typedef struct jsobj_print {
 	char **jsop_bufp;
 	size_t *jsop_lenp;
@@ -440,6 +466,7 @@ typedef struct jsobj_print {
 	const char *jsop_member;
 	boolean_t jsop_found;
 	boolean_t jsop_descended;
+	jspropinfo_t jsop_propinfo;
 } jsobj_print_t;
 
 static int jsobj_print_number(uintptr_t, jsobj_print_t *);
@@ -1998,9 +2025,11 @@ jsobj_is_hole(uintptr_t addr)
  * The canonical source of the information used here is the implementation of
  * property lookup in the V8 source code, currently in Object::GetProperty.
  */
+
 static int
 jsobj_properties(uintptr_t addr,
-    int (*func)(const char *, uintptr_t, void *), void *arg)
+    int (*func)(const char *, uintptr_t, void *), void *arg,
+    jspropinfo_t *propinfop)
 {
 	uintptr_t ptr, map, elements;
 	uintptr_t *props = NULL, *descs = NULL, *content = NULL, *trans, *elts;
@@ -2010,6 +2039,7 @@ jsobj_properties(uintptr_t addr,
 	int rval = -1;
 	size_t ps = sizeof (uintptr_t);
 	ssize_t off;
+	jspropinfo_t propinfo = JPI_NONE;
 
 	/*
 	 * First, check if the JSObject's "properties" field is a FixedArray.
@@ -2026,6 +2056,8 @@ jsobj_properties(uintptr_t addr,
 		char buf[256];
 		(void) mdb_snprintf(buf, sizeof (buf), "<%s>",
 		    enum_lookup_str(v8_types, type, "unknown"));
+		if (propinfop != NULL)
+			*propinfop = JPI_BADLAYOUT;
 		return (func(buf, NULL, arg));
 	}
 
@@ -2056,6 +2088,7 @@ jsobj_properties(uintptr_t addr,
 
 		kind = bit_field2 >> V8_ELEMENTS_KIND_SHIFT;
 		kind &= (1 << V8_ELEMENTS_KIND_BITCOUNT) - 1;
+		propinfo |= JPI_NUMERIC;
 
 		if (kind == V8_ELEMENTS_FAST_ELEMENTS ||
 		    kind == V8_ELEMENTS_FAST_HOLEY_ELEMENTS) {
@@ -2074,6 +2107,7 @@ jsobj_properties(uintptr_t addr,
 				}
 			}
 		} else if (kind == V8_ELEMENTS_DICTIONARY_ELEMENTS) {
+			propinfo |= JPI_DICT;
 			if (read_heap_dict(elements, func, arg) != 0) {
 				mdb_free(elts, sz);
 				goto err;
@@ -2096,8 +2130,12 @@ jsobj_properties(uintptr_t addr,
 		    map + V8_OFF_MAP_BIT_FIELD3) == -1)
 			goto err;
 
-		if (V8_SMI_VALUE(bit_field3) & (1 << V8_DICT_SHIFT))
+		if (V8_SMI_VALUE(bit_field3) & (1 << V8_DICT_SHIFT)) {
+			propinfo |= JPI_DICT;
+			if (propinfop != NULL)
+				*propinfop = propinfo;
 			return (read_heap_dict(ptr, func, arg));
+		}
 	} else if (V8_OFF_MAP_INSTANCE_DESCRIPTORS != -1) {
 		uintptr_t bit_field3;
 
@@ -2117,6 +2155,9 @@ jsobj_properties(uintptr_t addr,
 			 * dictionary -- an assumption that is assuredly in
 			 * error in some cases.
 			 */
+			propinfo |= JPI_DICT;
+			if (propinfop != NULL)
+				*propinfop = propinfo;
 			return (read_heap_dict(ptr, func, arg));
 		}
 	}
@@ -2139,6 +2180,7 @@ jsobj_properties(uintptr_t addr,
 			goto err;
 		}
 
+		propinfo |= JPI_HASTRANSITIONS;
 		off = V8_OFF_MAP_TRANSITIONS;
 		if (mdb_vread(&ptr, ps, map + off) == -1)
 			goto err;
@@ -2195,6 +2237,7 @@ jsobj_properties(uintptr_t addr,
 			goto err;
 
 		rndescs = ndescs - V8_PROP_IDX_FIRST;
+		propinfo |= JPI_HASCONTENT;
 	}
 
 	/*
@@ -2229,6 +2272,7 @@ jsobj_properties(uintptr_t addr,
 		 * what's here.
 		 */
 		if (detidx >= ncontent) {
+			propinfo |= JPI_SKIPPED;
 			v8_warn("property descriptor %d: detidx (%d) "
 			    "out of bounds for content array (length %d)\n",
 			    ii, detidx, ncontent);
@@ -2237,23 +2281,28 @@ jsobj_properties(uintptr_t addr,
 
 		/*
 		 * We only process fields.  There are other entries here
-		 * (notably: transitions) that we don't care about.
+		 * (notably: transitions) that we don't care about (and these
+		 * are not errors).
 		 */
 		if (!V8_DESC_ISFIELD(content[detidx]))
 			continue;
 
 		if (keyidx >= ndescs) {
+			propinfo |= JPI_SKIPPED;
 			v8_warn("property descriptor %d: keyidx (%d) "
 			    "out of bounds for descriptor array (length %d)\n",
 			    ii, keyidx, ndescs);
 			continue;
 		}
 
-		if (jsstr_print(descs[keyidx], JSSTR_NUDE, &c, &len) != 0)
+		if (jsstr_print(descs[keyidx], JSSTR_NUDE, &c, &len) != 0) {
+			propinfo |= JPI_SKIPPED;
 			continue;
+		}
 
 		val = (intptr_t)content[validx];
 		if (!V8_IS_SMI(val)) {
+			propinfo |= JPI_SKIPPED;
 			v8_warn("object %p: property descriptor %d: value "
 			    "index value is not an SMI: %p\n", addr, ii, val);
 			continue;
@@ -2292,10 +2341,13 @@ jsobj_properties(uintptr_t addr,
 			}
 
 			if (mdb_vread(&ptr, sizeof (ptr), propaddr) == -1) {
+				propinfo |= JPI_SKIPPED;
 				v8_warn("object %p: failed to read in-object "
 				    "property at %p", addr, propaddr);
 				continue;
 			}
+
+			propinfo |= JPI_INOBJECT;
 		} else {
 			/*
 			 * The property is in the separate "props" array.
@@ -2309,12 +2361,14 @@ jsobj_properties(uintptr_t addr,
 				if (val < rndescs)
 					continue;
 
+				propinfo |= JPI_SKIPPED;
 				v8_warn("object %p: property descriptor %d: "
 				    "value index value (%d) out of bounds "
 				    "(%d)\n", addr, ii, val, nprops);
 				goto err;
 			}
 
+			propinfo |= JPI_PROPS;
 			ptr = props[val];
 		}
 
@@ -2323,6 +2377,9 @@ jsobj_properties(uintptr_t addr,
 	}
 
 	rval = 0;
+	if (propinfop != NULL)
+		*propinfop = propinfo;
+
 err:
 	if (props != NULL)
 		mdb_free(props, nprops * sizeof (uintptr_t));
@@ -2736,7 +2793,8 @@ jsobj_print_jsobject(uintptr_t addr, jsobj_print_t *jsop)
 	size_t *lenp = jsop->jsop_lenp;
 
 	if (jsop->jsop_member != NULL)
-		return (jsobj_properties(addr, jsobj_print_prop_member, jsop));
+		return (jsobj_properties(addr, jsobj_print_prop_member,
+		    jsop, &jsop->jsop_propinfo));
 
 	if (jsop->jsop_depth == 0) {
 		(void) bsnprintf(bufp, lenp, "[...]");
@@ -2745,7 +2803,8 @@ jsobj_print_jsobject(uintptr_t addr, jsobj_print_t *jsop)
 
 	jsop->jsop_nprops = 0;
 
-	if (jsobj_properties(addr, jsobj_print_prop, jsop) != 0)
+	if (jsobj_properties(addr, jsobj_print_prop, jsop,
+	    &jsop->jsop_propinfo) != 0)
 		return (-1);
 
 	if (jsop->jsop_nprops > 0) {
@@ -3842,7 +3901,7 @@ findjsobjects_range(findjsobjects_state_t *fjs, uintptr_t addr, uintptr_t size)
 
 		if (type == jsobject) {
 			if (jsobj_properties(addr,
-			    findjsobjects_prop, fjs) != 0) {
+			    findjsobjects_prop, fjs, NULL) != 0) {
 				findjsobjects_free(fjs->fjs_current);
 				fjs->fjs_current = NULL;
 				continue;
@@ -4044,7 +4103,7 @@ findjsobjects_references(findjsobjects_state_t *fjs)
 			fjs->fjs_addr = inst->fjsi_addr;
 
 			(void) jsobj_properties(inst->fjsi_addr,
-			    findjsobjects_references_prop, fjs);
+			    findjsobjects_references_prop, fjs, NULL);
 		}
 	}
 
@@ -4559,6 +4618,38 @@ dcmd_jsframe(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	return (rv);
 }
 
+static void
+jsobj_print_propinfo(jspropinfo_t propinfo)
+{
+	if (propinfo == JPI_NONE)
+		return;
+
+	mdb_printf("property kind: ");
+	if ((propinfo & JPI_NUMERIC) != 0)
+		mdb_printf("numeric-named ");
+	if ((propinfo & JPI_DICT) != 0)
+		mdb_printf("dictionary ");
+	if ((propinfo & JPI_INOBJECT) != 0)
+		mdb_printf("in-object ");
+	if ((propinfo & JPI_PROPS) != 0)
+		mdb_printf("\"properties\" array ");
+	mdb_printf("\n");
+
+	if ((propinfo & (JPI_HASTRANSITIONS | JPI_HASCONTENT)) != 0) {
+		mdb_printf("fallbacks: ");
+		if ((propinfo & JPI_HASTRANSITIONS) != 0)
+			mdb_printf("transitions ");
+		if ((propinfo & JPI_HASCONTENT) != 0)
+			mdb_printf("content ");
+		mdb_printf("\n");
+	}
+
+	if ((propinfo & JPI_SKIPPED) != 0)
+		mdb_printf("some properties skipped due to unexpected layout\n");
+	if ((propinfo & JPI_BADLAYOUT) != 0)
+		mdb_printf("object has unexpected layout\n");
+}
+
 /* ARGSUSED */
 static int
 dcmd_jsprint(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
@@ -4567,6 +4658,7 @@ dcmd_jsprint(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	size_t bufsz = 262144, len = bufsz;
 	jsobj_print_t jsop;
 	boolean_t opt_b = B_FALSE;
+	boolean_t opt_v = B_FALSE;
 	int rv, i;
 
 	bzero(&jsop, sizeof (jsop));
@@ -4576,7 +4668,8 @@ dcmd_jsprint(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	i = mdb_getopts(argc, argv,
 	    'a', MDB_OPT_SETBITS, B_TRUE, &jsop.jsop_printaddr,
 	    'b', MDB_OPT_SETBITS, B_TRUE, &opt_b,
-	    'd', MDB_OPT_UINT64, &jsop.jsop_depth, NULL);
+	    'd', MDB_OPT_UINT64, &jsop.jsop_depth,
+	    'v', MDB_OPT_SETBITS, B_TRUE, &opt_v, NULL);
 
 	if (opt_b)
 		jsop.jsop_baseaddr = addr;
@@ -4633,6 +4726,9 @@ dcmd_jsprint(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	} while (i < argc);
 
 	mdb_printf("\n");
+
+	if (opt_v)
+		jsobj_print_propinfo(jsop.jsop_propinfo);
 
 	return (DCMD_OK);
 }
@@ -4986,7 +5082,7 @@ walk_jsprop_init(mdb_walk_state_t *wsp)
 
 	jspw = mdb_zalloc(sizeof (jsprop_walk_data_t), UM_SLEEP | UM_GC);
 
-	if (jsobj_properties(addr, walk_jsprop_nprops, jspw) == -1) {
+	if (jsobj_properties(addr, walk_jsprop_nprops, jspw, NULL) == -1) {
 		mdb_warn("couldn't iterate over properties for %p\n", addr);
 		return (WALK_ERR);
 	}
@@ -4994,7 +5090,7 @@ walk_jsprop_init(mdb_walk_state_t *wsp)
 	jspw->jspw_props = mdb_zalloc(jspw->jspw_nprops *
 	    sizeof (uintptr_t), UM_SLEEP | UM_GC);
 
-	if (jsobj_properties(addr, walk_jsprop_props, jspw) == -1) {
+	if (jsobj_properties(addr, walk_jsprop_props, jspw, NULL) == -1) {
 		mdb_warn("couldn't iterate over properties for %p\n", addr);
 		return (WALK_ERR);
 	}
