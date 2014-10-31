@@ -643,7 +643,7 @@ again:
 
 	/*
 	 * "v8dbg_dict_shift" can have different fallback values depending on
-	 * what version of V8 we're on.
+	 * what version of V8 we're on. XXX
 	 */
 	if (v8_major > 3 || (v8_major == 3 && v8_minor >= 26)) {
 		V8_DICT_SHIFT = 22;
@@ -2320,14 +2320,15 @@ jsobj_properties(uintptr_t addr,
 		if (!V8_IS_SMI(val)) {
 			propinfo |= JPI_SKIPPED;
 			v8_warn("object %p: property descriptor %d: value "
-			    "index value is not an SMI: %p\n", addr, ii, val);
+			    "index is not an SMI: %p\n", addr, ii, val);
 			continue;
 		}
 
 		/*
 		 * The "value" part of each property descriptor tells us whether
 		 * the property value is stored directly in the object or in the
-		 * related "props" array.
+		 * related "props" array.  See JSObject::RawFastPropertyAt() in
+		 * the V8 source.
 		 */
 		val = V8_SMI_VALUE(val) - ninprops;
 		if (val < 0) {
