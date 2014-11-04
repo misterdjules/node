@@ -275,7 +275,7 @@ static v8_constant_t v8_constants[] = {
 #endif
 	{ &V8_PointerSizeLog2,		"v8dbg_PointerSizeLog2"		},
 
-	{ &V8_DICT_SHIFT,		"v8dbg_dict_shift",
+	{ &V8_DICT_SHIFT,		"v8dbg_bit_field3_dictionary_map_shift",
 	    V8_CONSTANT_FALLBACK(3, 13), 24 },
 	{ &V8_DICT_PREFIX_SIZE,		"v8dbg_dict_prefix_size",
 	    V8_CONSTANT_FALLBACK(3, 11), 2 },
@@ -640,14 +640,6 @@ again:
 
 	if (V8_OFF_MAP_BIT_FIELD2 == -1)
 		V8_OFF_MAP_BIT_FIELD2 = V8_OFF_MAP_INSTANCE_ATTRIBUTES + 3;
-
-	/*
-	 * "v8dbg_dict_shift" can have different fallback values depending on
-	 * what version of V8 we're on. XXX
-	 */
-	if (v8_major > 3 || (v8_major == 3 && v8_minor >= 26)) {
-		V8_DICT_SHIFT = 22;
-	}
 
 	return (failed ? -1 : 0);
 }
@@ -2349,7 +2341,6 @@ jsobj_properties(uintptr_t addr,
 			 * These constants are literal here because they're
 			 * literal in the V8 source itself.
 			 */
-			/* XXX */
 			if (v8_major > 3 || (v8_major == 3 && v8_minor >= 26)) {
 				val = V8_PROP_FIELDINDEX(content[detidx]);
 				propaddr = addr + V8_OFF_HEAP(
