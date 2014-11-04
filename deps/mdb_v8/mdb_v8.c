@@ -1235,8 +1235,8 @@ read_heap_dict(uintptr_t addr,
 
 		if (V8_IS_SMI(dict[i])) {
 			intptr_t val = V8_SMI_VALUE(dict[i]);
-
-			(void) snprintf(buf, sizeof (buf), "%ld", val);
+			(void) snprintf(buf, sizeof (buf), "%ld",
+			    (uint64_t)val);
 		} else {
 			if (jsobj_is_hole(dict[i])) {
 				/*
@@ -1280,7 +1280,6 @@ obj_jsconstructor(uintptr_t addr, char **bufp, size_t *lenp, boolean_t verbose)
 {
 	uint8_t type;
 	uintptr_t map, consfunc, funcinfop;
-	char funcbuf[80];
 	const char *constype;
 
 	if (!V8_IS_HEAPOBJECT(addr) ||
@@ -3186,7 +3185,7 @@ dcmd_v8internal(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	if (obj_v8internal(addr, idx, &fieldaddr) != 0)
 		return (DCMD_ERR);
 
-	printf("%p\n", fieldaddr);
+	mdb_printf("%p\n", fieldaddr);
 	return (DCMD_OK);
 }
 
@@ -3916,11 +3915,11 @@ findjsobjects_jsfunc(findjsobjects_state_t *fjs, uintptr_t addr)
 	func->fjsf_instances.fjsi_addr = addr;
 	func->fjsf_shared = funcinfo;
 
-	bufp = &func->fjsf_funcname;
+	bufp = func->fjsf_funcname;
 	len = sizeof (func->fjsf_funcname);
-	err |= jsfunc_name(funcinfo, &bufp, &len);
+	err = jsfunc_name(funcinfo, &bufp, &len);
 
-	bufp = &func->fjsf_scriptname;
+	bufp = func->fjsf_scriptname;
 	len = sizeof (func->fjsf_scriptname);
 	err |= jsstr_print(name, JSSTR_NUDE, &bufp, &len);
 
@@ -4677,7 +4676,7 @@ dcmd_nodebuffer(uintptr_t addr, uint_t flags, int argc,
 {
 	boolean_t opt_f = B_FALSE;
 	char buf[80];
-	char *bufp = &buf;
+	char *bufp = buf;
 	size_t len = sizeof (buf);
 	uintptr_t elts, rawbuf;
 
@@ -4723,7 +4722,7 @@ dcmd_jsconstructor(uintptr_t addr, uint_t flags, int argc,
 	    NULL) != argc)
 		return (DCMD_USAGE);
 
-	bufp = &buf;
+	bufp = buf;
 	if (obj_jsconstructor(addr, &bufp, &len, opt_v))
 		return (DCMD_ERR);
 
@@ -4962,8 +4961,6 @@ dcmd_jsfunctions(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	findjsobjects_state_t *fjs = &findjsobjects_state;
 	findjsobjects_func_t *func;
 	uintptr_t funcinfo;
-	char *bufp;
-	size_t len;
 	boolean_t showrange = B_FALSE;
 	const char *name = NULL, *filename = NULL;
 	uintptr_t instr = 0;
