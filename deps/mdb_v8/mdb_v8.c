@@ -442,18 +442,18 @@ typedef enum {
 	 * Indicates how properties are stored in this object.  There can be
 	 * both numeric properties and some of the other kinds.
 	 */
-	JPI_NUMERIC   = 0x01,	/* numeric-named properties in "elements" */
-	JPI_DICT      = 0x02,	/* dictionary properties */
-	JPI_INOBJECT  = 0x04,	/* properties stored inside object */
-	JPI_PROPS     = 0x08,	/* "properties" array */
+	JPI_NUMERIC	= 0x01,	/* numeric-named properties in "elements" */
+	JPI_DICT	= 0x02,	/* dictionary properties */
+	JPI_INOBJECT	= 0x04,	/* properties stored inside object */
+	JPI_PROPS	= 0x08,	/* "properties" array */
 
 	/* error-like cases */
 	JPI_SKIPPED   = 0x10,	/* some properties were skipped */
 	JPI_BADLAYOUT = 0x20,	/* we didn't recognize the layout at all */
 
 	/* fallback cases */
-	JPI_HASTRANSITIONS = 0x100,	/* found a separate transitions array */
-	JPI_HASCONTENT     = 0x200,	/* found a separate content array */
+	JPI_HASTRANSITIONS	= 0x100, /* found a transitions array */
+	JPI_HASCONTENT		= 0x200, /* found a separate content array */
 } jspropinfo_t;
 
 typedef struct jsobj_print {
@@ -1294,7 +1294,7 @@ obj_jsconstructor(uintptr_t addr, char **bufp, size_t *lenp, boolean_t verbose)
 	    mdb_vread(&consfunc, sizeof (consfunc),
 	    map + V8_OFF_MAP_CONSTRUCTOR) == -1) {
 		mdb_warn("unable to read object map\n");
-	    	return (-1);
+		return (-1);
 	}
 
 	if (read_typebyte(&type, consfunc) != 0)
@@ -1323,7 +1323,7 @@ obj_jsconstructor(uintptr_t addr, char **bufp, size_t *lenp, boolean_t verbose)
 
 	if (verbose)
 		bsnprintf(bufp, lenp, " (JSFunction: %p)", consfunc);
-	
+
 	return (0);
 }
 
@@ -1375,7 +1375,8 @@ obj_jstype(uintptr_t addr, char **bufp, size_t *lenp, uint8_t *typep)
 	    mdb_vread(&consfunc, sizeof (consfunc),
 	    map + V8_OFF_MAP_CONSTRUCTOR) != -1 &&
 	    read_typebyte(&typebyte, consfunc) == 0 &&
-	    strcmp(enum_lookup_str(v8_types, typebyte, ""), "JSFunction") == 0 &&
+	    strcmp(enum_lookup_str(v8_types, typebyte, ""),
+	    "JSFunction") == 0 &&
 	    mdb_vread(&funcinfop, sizeof (funcinfop),
 	    consfunc + V8_OFF_JSFUNCTION_SHARED) != -1) {
 		(void) bsnprintf(bufp, lenp, ": ");
@@ -1921,7 +1922,7 @@ jsobj_is_hole(uintptr_t addr)
 
 /*
  * Iterate the properties of a JavaScript object "addr".
- * 
+ *
  * Every heap object refers to a Map that describes how that heap object is laid
  * out.  The Map includes information like the constructor function used to
  * create the object, how many bytes each object uses, and how many properties
@@ -1946,7 +1947,7 @@ jsobj_is_hole(uintptr_t addr)
  * Properties having numeric indexes are stored in the "elements" array attached
  * to each object.  Objects with numeric properties can also have other
  * properties.
- * 
+ *
  *
  * Dictionary properties
  *
@@ -2204,7 +2205,7 @@ jsobj_properties(uintptr_t addr,
 		if (mdb_vread(&ptr, ps, map + off) == -1)
 			goto err;
 	}
-	
+
 	/*
 	 * Either way, at this point "ptr" should refer to the descriptors
 	 * array.
@@ -2220,7 +2221,8 @@ jsobj_properties(uintptr_t addr,
 	 */
 	if (read_size(&size, addr) != 0)
 		size = 0;
-	if (mdb_vread(&ninprops, ps, map + V8_OFF_MAP_INOBJECT_PROPERTIES) == -1)
+	if (mdb_vread(&ninprops, ps,
+	    map + V8_OFF_MAP_INOBJECT_PROPERTIES) == -1)
 		goto err;
 
 	if (V8_PROP_IDX_CONTENT == -1) {
@@ -3331,7 +3333,7 @@ jsframe_print_skipped(jsframe_t *jsf)
 		mdb_printf("        (1 internal frame elided)\n");
 	else if (jsf->jsf_nskipped > 1)
 		mdb_printf("        (%d internal frames elided)\n",
-		     jsf->jsf_nskipped);
+		    jsf->jsf_nskipped);
 	jsf->jsf_nskipped = 0;
 }
 
@@ -3582,7 +3584,7 @@ do_jsframe(uintptr_t fptr, uintptr_t raddr, jsframe_t *jsf)
 				bufp = buf;
 				len = sizeof (buf);
 				(void) obj_jstype(argptr, &bufp, &len, NULL);
-	
+
 				mdb_printf("this: %p (%s)\n", argptr, buf);
 			}
 		}
@@ -4311,9 +4313,11 @@ findjsobjects_match_kind(findjsobjects_obj_t *obj, const char *propkind)
 	    ((p & JPI_PROPS) != 0 && strstr(propkind, "props") != NULL) ||
 	    ((p & JPI_HASTRANSITIONS) != 0 &&
 	    strstr(propkind, "transitions") != NULL) ||
-	    ((p & JPI_HASCONTENT) != 0 && strstr(propkind, "content") != NULL) ||
+	    ((p & JPI_HASCONTENT) != 0 &&
+	    strstr(propkind, "content") != NULL) ||
 	    ((p & JPI_SKIPPED) != 0 && strstr(propkind, "skipped") != NULL) ||
-	    ((p & JPI_BADLAYOUT) != 0 && strstr(propkind, "badlayout") != NULL)) {
+	    ((p & JPI_BADLAYOUT) != 0 &&
+	    strstr(propkind, "badlayout") != NULL)) {
 		mdb_printf("%p\n", obj->fjso_instances.fjsi_addr);
 	}
 }
@@ -4488,7 +4492,8 @@ findjsobjects_run(findjsobjects_state_t *fjs)
 			qsort(sorted, avl_numnodes(&fjs->fjs_tree),
 			    sizeof (void *), findjsobjects_cmp_ninstances);
 
-			for (i = 1, fjs->fjs_objects = sorted[0]; i < nobjs; i++)
+			for (i = 1, fjs->fjs_objects = sorted[0];
+			    i < nobjs; i++)
 				sorted[i - 1]->fjso_next = sorted[i];
 
 			sorted[nobjs - 1]->fjso_next = NULL;
@@ -4509,7 +4514,8 @@ findjsobjects_run(findjsobjects_state_t *fjs)
 			mdb_printf(f, "processed arrays", stats->fjss_arrays);
 			mdb_printf(f, "unique objects", stats->fjss_uniques);
 			mdb_printf(f, "functions found", stats->fjss_funcs);
-			mdb_printf(f, "unique functions", stats->fjss_funcs_unique);
+			mdb_printf(f, "unique functions",
+			    stats->fjss_funcs_unique);
 			mdb_printf(f, "functions skipped",
 			    stats->fjss_funcs_skipped);
 		}
@@ -4720,7 +4726,7 @@ dcmd_jsconstructor(uintptr_t addr, uint_t flags, int argc,
 	bufp = &buf;
 	if (obj_jsconstructor(addr, &bufp, &len, opt_v))
 		return (DCMD_ERR);
-	
+
 	mdb_printf("%s\n", buf);
 	return (DCMD_OK);
 }
@@ -4808,7 +4814,8 @@ jsobj_print_propinfo(jspropinfo_t propinfo)
 	}
 
 	if ((propinfo & JPI_SKIPPED) != 0)
-		mdb_printf("some properties skipped due to unexpected layout\n");
+		mdb_printf(
+		    "some properties skipped due to unexpected layout\n");
 	if ((propinfo & JPI_BADLAYOUT) != 0)
 		mdb_printf("object has unexpected layout\n");
 }
@@ -4914,7 +4921,7 @@ dcmd_jssource(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		return (DCMD_USAGE);
 
 	if (!V8_IS_HEAPOBJECT(addr) || read_typebyte(&type, addr) != 0) {
-	    	mdb_warn("%p is not a heap object\n", addr);
+		mdb_warn("%p is not a heap object\n", addr);
 		return (DCMD_ERR);
 	}
 
@@ -4936,7 +4943,7 @@ dcmd_jssource(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	    V8_OFF_SHAREDFUNCTIONINFO_FUNCTION_TOKEN_POSITION) != 0 ||
 	    read_heap_smi(&endpos, funcinfop,
 	    V8_OFF_SHAREDFUNCTIONINFO_END_POSITION) != 0) {
-	    	mdb_warn("%p: failed to find function's boundaries\n", addr);
+		mdb_warn("%p: failed to find function's boundaries\n", addr);
 	}
 
 	if (jsstr_print(funcnamep, JSSTR_NUDE, &bufp, &len) == 0)
@@ -5025,9 +5032,9 @@ dcmd_jsfunctions(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 
 		if (!showrange) {
 			mdb_printf("%?p %8d %-40s %s %s\n",
-			    func->fjsf_instances.fjsi_addr, func->fjsf_ninstances,
-			    func->fjsf_funcname, func->fjsf_scriptname,
-			    func->fjsf_location);
+			    func->fjsf_instances.fjsi_addr,
+			    func->fjsf_ninstances, func->fjsf_funcname,
+			    func->fjsf_scriptname, func->fjsf_location);
 		} else {
 			uintptr_t code, ilen;
 
@@ -5081,8 +5088,8 @@ dcmd_jsfunctions_help(void)
 	mdb_inc_indent(2);
 
 	mdb_printf("%s\n",
-"  -f file  List functions that were defined in a file whose name contains this\n"
-"           substring.\n"
+"  -f file  List functions that were defined in a file whose name contains\n"
+"           this substring.\n"
 "  -n func  List functions whose name contains this substring\n"
 "  -x instr List functions whose compiled instructions include this address\n"
 "  -X       Show where the function's instructions are stored in memory\n");
