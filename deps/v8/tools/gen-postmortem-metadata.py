@@ -121,6 +121,10 @@ consts_misc = [
         'value': 'Map::ElementsKindBits::kShift' },
     { 'name': 'bit_field3_dictionary_map_shift',
         'value': 'Map::DictionaryMap::kShift' },
+    { 'name': 'fieldindex_mask',
+        'value': 'PropertyDetails::FieldIndexField::kMask' },
+    { 'name': 'fieldindex_shift',
+        'value': 'PropertyDetails::FieldIndexField::kShift' },
 
     { 'name': 'off_fp_context',
         'value': 'StandardFrameConstants::kContextOffset' },
