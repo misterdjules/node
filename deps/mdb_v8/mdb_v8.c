@@ -1414,7 +1414,6 @@ obj_v8internal(uintptr_t addr, uint_t idx, uintptr_t *valp)
 	uint8_t type;
 
 	v8_class_t *clp;
-	v8_field_t *flp;
 	char buf[256];
 
 	bufp = buf;
@@ -1640,11 +1639,6 @@ jsstr_print_seq(uintptr_t addr, uint_t flags, char **bufp, size_t *lenp,
 	char *buf;
 	uint16_t chrval;
 
-	if ((blen = MIN(*lenp, 256 * 1024)) == 0)
-		return (0);
-
-	buf = alloca(blen);
-
 	if (read_heap_smi(&nstrchrs, addr, V8_OFF_STRING_LENGTH) != 0) {
 		(void) bsnprintf(bufp, lenp,
 		    "<string (failed to read length)>");
@@ -1655,15 +1649,21 @@ jsstr_print_seq(uintptr_t addr, uint_t flags, char **bufp, size_t *lenp,
 		nstrchrs = slicelen;
 
 	if ((flags & JSSTR_ISASCII) != 0) {
+		blen = *lenp;
 		nstrbytes = nstrchrs;
 		nreadoffset = sliceoffset;
+		nreadbytes = nstrbytes + sizeof ("\"\"") <= blen ?
+		    nstrbytes : blen - sizeof ("\"\"[...]");
 	} else {
+		blen = 2 * (*lenp);
 		nstrbytes = 2 * nstrchrs;
 		nreadoffset = 2 * sliceoffset;
+		nreadbytes = nstrchrs + sizeof ("\"\"") <= blen ?
+		    nstrbytes : 2 * (blen - sizeof ("\"\"[...]"));
 	}
 
-	nreadbytes = nstrbytes + sizeof ("\"\"") <= blen ? nstrbytes :
-	    blen - sizeof ("\"\"[...]");
+	if ((blen = MIN(blen, 256 * 1024)) == 0)
+		return (0);
 
 	if (nreadbytes < 0) {
 		/*
@@ -1686,6 +1686,7 @@ jsstr_print_seq(uintptr_t addr, uint_t flags, char **bufp, size_t *lenp,
 		return (0);
 	}
 
+	buf = alloca(blen);
 	buf[0] = '\0';
 
 	if ((flags & JSSTR_ISASCII) != 0) {
@@ -3660,6 +3661,17 @@ typedef struct findjsobjects_obj {
 	char fjso_constructor[80];
 } findjsobjects_obj_t;
 
+typedef struct findjsobjects_func {
+	findjsobjects_instance_t fjsf_instances;
+	int fjsf_ninstances;
+	avl_node_t fjsf_node;
+	struct findjsobjects_func *fjsf_next;
+	uintptr_t fjsf_shared;
+	char fjsf_funcname[40];
+	char fjsf_scriptname[80];
+	char fjsf_location[20];
+} findjsobjects_func_t;
+
 typedef struct findjsobjects_stats {
 	int fjss_heapobjs;
 	int fjss_cached;
@@ -3668,6 +3680,9 @@ typedef struct findjsobjects_stats {
 	int fjss_objects;
 	int fjss_arrays;
 	int fjss_uniques;
+	int fjss_funcs;
+	int fjss_funcs_skipped;
+	int fjss_funcs_unique;
 } findjsobjects_stats_t;
 
 typedef struct findjsobjects_reference {
@@ -3696,10 +3711,12 @@ typedef struct findjsobjects_state {
 	boolean_t fjs_referred;
 	avl_tree_t fjs_tree;
 	avl_tree_t fjs_referents;
+	avl_tree_t fjs_funcinfo;
 	findjsobjects_referent_t *fjs_head;
 	findjsobjects_referent_t *fjs_tail;
 	findjsobjects_obj_t *fjs_current;
 	findjsobjects_obj_t *fjs_objects;
+	findjsobjects_func_t *fjs_funcs;
 	findjsobjects_stats_t fjs_stats;
 } findjsobjects_state_t;
 
@@ -3761,6 +3778,14 @@ findjsobjects_cmp(findjsobjects_obj_t *lhs, findjsobjects_obj_t *rhs)
 	rv = strcmp(lhs->fjso_constructor, rhs->fjso_constructor);
 
 	return (rv < 0 ? -1 : rv > 0 ? 1 : 0);
+}
+
+int
+findjsobjects_cmp_funcinfo(findjsobjects_func_t *lhs,
+    findjsobjects_func_t *rhs)
+{
+	int diff = lhs->fjsf_shared - rhs->fjsf_shared;
+	return (diff < 0 ? -1 : diff > 0 ? 1 : 0);
 }
 
 int
@@ -3865,6 +3890,71 @@ out:
 	v8_silent--;
 }
 
+static void
+findjsobjects_jsfunc(findjsobjects_state_t *fjs, uintptr_t addr)
+{
+	findjsobjects_func_t *func, *ofunc;
+	findjsobjects_instance_t *inst;
+	uintptr_t funcinfo, script, name;
+	avl_index_t where;
+	int err;
+	char *bufp;
+	size_t len;
+
+	/*
+	 * This may be somewhat expensive to do for all JSFunctions, but in most
+	 * core files, there aren't that many.  We could defer some of this work
+	 * until the user tries to print the function ::jsfunctions, but this
+	 * step is useful to do early to filter out garbage data.
+	 */
+
+	v8_silent++;
+	if (read_heap_ptr(&funcinfo, addr, V8_OFF_JSFUNCTION_SHARED) != 0 ||
+	    read_heap_ptr(&script, funcinfo,
+	    V8_OFF_SHAREDFUNCTIONINFO_SCRIPT) != 0 ||
+	    read_heap_ptr(&name, script, V8_OFF_SCRIPT_NAME) != 0) {
+		fjs->fjs_stats.fjss_funcs_skipped++;
+		v8_silent--;
+		return;
+	}
+
+	func = mdb_zalloc(sizeof (findjsobjects_func_t), UM_SLEEP);
+	func->fjsf_ninstances = 1;
+	func->fjsf_instances.fjsi_addr = addr;
+	func->fjsf_shared = funcinfo;
+
+	bufp = &func->fjsf_funcname;
+	len = sizeof (func->fjsf_funcname);
+	err |= jsfunc_name(funcinfo, &bufp, &len);
+
+	bufp = &func->fjsf_scriptname;
+	len = sizeof (func->fjsf_scriptname);
+	err |= jsstr_print(name, JSSTR_NUDE, &bufp, &len);
+
+	v8_silent--;
+	if (err != 0) {
+		fjs->fjs_stats.fjss_funcs_skipped++;
+		mdb_free(func, sizeof (findjsobjects_func_t));
+		return;
+	}
+
+	fjs->fjs_stats.fjss_funcs++;
+	ofunc = avl_find(&fjs->fjs_funcinfo, func, &where);
+	if (ofunc == NULL) {
+		avl_add(&fjs->fjs_funcinfo, func);
+		func->fjsf_next = fjs->fjs_funcs;
+		fjs->fjs_funcs = func;
+		fjs->fjs_stats.fjss_funcs_unique++;
+	} else {
+		inst = mdb_alloc(sizeof (findjsobjects_instance_t), UM_SLEEP);
+		inst->fjsi_addr = addr;
+		inst->fjsi_next = ofunc->fjsf_instances.fjsi_next;
+		ofunc->fjsf_instances.fjsi_next = inst;
+		ofunc->fjsf_ninstances++;
+		mdb_free(func, sizeof (findjsobjects_func_t));
+	}
+}
+
 int
 findjsobjects_range(findjsobjects_state_t *fjs, uintptr_t addr, uintptr_t size)
 {
@@ -3872,6 +3962,7 @@ findjsobjects_range(findjsobjects_state_t *fjs, uintptr_t addr, uintptr_t size)
 	findjsobjects_stats_t *stats = &fjs->fjs_stats;
 	uint8_t type;
 	int jsobject = V8_TYPE_JSOBJECT, jsarray = V8_TYPE_JSARRAY;
+	int jsfunction = V8_TYPE_JSFUNCTION;
 	caddr_t range = mdb_alloc(size, UM_SLEEP);
 	uintptr_t base = addr, mapaddr;
 
@@ -3908,6 +3999,11 @@ findjsobjects_range(findjsobjects_state_t *fjs, uintptr_t addr, uintptr_t size)
 		} else {
 			if (mdb_vread(&type, sizeof (uint8_t), mapaddr) == -1)
 				continue;
+		}
+
+		if (type == jsfunction) {
+			findjsobjects_jsfunc(fjs, addr);
+			continue;
 		}
 
 		if (type != jsobject && type != jsarray)
@@ -4338,86 +4434,70 @@ dcmd_findjsobjects_help(void)
 "  -v       Provide verbose statistics\n");
 }
 
+static findjsobjects_state_t findjsobjects_state;
+
 static int
-dcmd_findjsobjects(uintptr_t addr,
-    uint_t flags, int argc, const mdb_arg_t *argv)
+findjsobjects_run(findjsobjects_state_t *fjs)
 {
-	static findjsobjects_state_t fjs;
-	static findjsobjects_stats_t *stats = &fjs.fjs_stats;
-	findjsobjects_obj_t *obj;
 	struct ps_prochandle *Pr;
-	boolean_t references = B_FALSE, listlike = B_FALSE;
-	const char *propname = NULL;
-	const char *constructor = NULL;
-	const char *propkind = NULL;
+	findjsobjects_obj_t *obj;
+	findjsobjects_stats_t *stats = &fjs->fjs_stats;
 
-	fjs.fjs_verbose = B_FALSE;
-	fjs.fjs_brk = B_FALSE;
-	fjs.fjs_marking = B_FALSE;
-	fjs.fjs_allobjs = B_FALSE;
-
-	if (mdb_getopts(argc, argv,
-	    'a', MDB_OPT_SETBITS, B_TRUE, &fjs.fjs_allobjs,
-	    'b', MDB_OPT_SETBITS, B_TRUE, &fjs.fjs_brk,
-	    'c', MDB_OPT_STR, &constructor,
-	    'k', MDB_OPT_STR, &propkind,
-	    'l', MDB_OPT_SETBITS, B_TRUE, &listlike,
-	    'm', MDB_OPT_SETBITS, B_TRUE, &fjs.fjs_marking,
-	    'p', MDB_OPT_STR, &propname,
-	    'r', MDB_OPT_SETBITS, B_TRUE, &references,
-	    'v', MDB_OPT_SETBITS, B_TRUE, &fjs.fjs_verbose,
-	    NULL) != argc)
-		return (DCMD_USAGE);
-
-	if (!fjs.fjs_initialized) {
-		avl_create(&fjs.fjs_tree,
+	if (!fjs->fjs_initialized) {
+		avl_create(&fjs->fjs_tree,
 		    (int(*)(const void *, const void *))findjsobjects_cmp,
 		    sizeof (findjsobjects_obj_t),
 		    offsetof(findjsobjects_obj_t, fjso_node));
 
-		avl_create(&fjs.fjs_referents,
+		avl_create(&fjs->fjs_referents,
 		    (int(*)(const void *, const void *))
 		    findjsobjects_cmp_referents,
 		    sizeof (findjsobjects_referent_t),
 		    offsetof(findjsobjects_referent_t, fjsr_node));
 
-		fjs.fjs_initialized = B_TRUE;
+		avl_create(&fjs->fjs_funcinfo,
+		    (int(*)(const void *, const void*))
+		    findjsobjects_cmp_funcinfo,
+		    sizeof (findjsobjects_func_t),
+		    offsetof(findjsobjects_func_t, fjsf_node));
+
+		fjs->fjs_initialized = B_TRUE;
 	}
 
-	if (avl_is_empty(&fjs.fjs_tree)) {
+	if (avl_is_empty(&fjs->fjs_tree)) {
 		findjsobjects_obj_t **sorted;
 		int nobjs, i;
 		hrtime_t start = gethrtime();
 
 		if (mdb_get_xdata("pshandle", &Pr, sizeof (Pr)) == -1) {
 			mdb_warn("couldn't read pshandle xdata");
-			return (DCMD_ERR);
+			return (-1);
 		}
 
 		v8_silent++;
 
 		if (Pmapping_iter(Pr,
-		    (proc_map_f *)findjsobjects_mapping, &fjs) != 0) {
+		    (proc_map_f *)findjsobjects_mapping, fjs) != 0) {
 			v8_silent--;
-			return (DCMD_ERR);
+			return (-1);
 		}
 
-		if ((nobjs = avl_numnodes(&fjs.fjs_tree)) != 0) {
+		if ((nobjs = avl_numnodes(&fjs->fjs_tree)) != 0) {
 			/*
 			 * We have the objects -- now sort them.
 			 */
 			sorted = mdb_alloc(nobjs * sizeof (void *),
 			    UM_SLEEP | UM_GC);
 
-			for (obj = fjs.fjs_objects, i = 0; obj != NULL;
+			for (obj = fjs->fjs_objects, i = 0; obj != NULL;
 			    obj = obj->fjso_next, i++) {
 				sorted[i] = obj;
 			}
 
-			qsort(sorted, avl_numnodes(&fjs.fjs_tree),
+			qsort(sorted, avl_numnodes(&fjs->fjs_tree),
 			    sizeof (void *), findjsobjects_cmp_ninstances);
 
-			for (i = 1, fjs.fjs_objects = sorted[0]; i < nobjs; i++)
+			for (i = 1, fjs->fjs_objects = sorted[0]; i < nobjs; i++)
 				sorted[i - 1]->fjso_next = sorted[i];
 
 			sorted[nobjs - 1]->fjso_next = NULL;
@@ -4425,7 +4505,7 @@ dcmd_findjsobjects(uintptr_t addr,
 
 		v8_silent--;
 
-		if (fjs.fjs_verbose) {
+		if (fjs->fjs_verbose) {
 			const char *f = "findjsobjects: %30s => %d\n";
 			int elapsed = (int)((gethrtime() - start) / NANOSEC);
 
@@ -4437,8 +4517,47 @@ dcmd_findjsobjects(uintptr_t addr,
 			mdb_printf(f, "processed objects", stats->fjss_objects);
 			mdb_printf(f, "processed arrays", stats->fjss_arrays);
 			mdb_printf(f, "unique objects", stats->fjss_uniques);
+			mdb_printf(f, "functions found", stats->fjss_funcs);
+			mdb_printf(f, "unique functions", stats->fjss_funcs_unique);
+			mdb_printf(f, "functions skipped",
+			    stats->fjss_funcs_skipped);
 		}
 	}
+
+	return (0);
+}
+
+static int
+dcmd_findjsobjects(uintptr_t addr,
+    uint_t flags, int argc, const mdb_arg_t *argv)
+{
+	findjsobjects_state_t *fjs = &findjsobjects_state;
+	findjsobjects_obj_t *obj;
+	boolean_t references = B_FALSE, listlike = B_FALSE;
+	const char *propname = NULL;
+	const char *constructor = NULL;
+	const char *propkind = NULL;
+
+	fjs->fjs_verbose = B_FALSE;
+	fjs->fjs_brk = B_FALSE;
+	fjs->fjs_marking = B_FALSE;
+	fjs->fjs_allobjs = B_FALSE;
+
+	if (mdb_getopts(argc, argv,
+	    'a', MDB_OPT_SETBITS, B_TRUE, &fjs->fjs_allobjs,
+	    'b', MDB_OPT_SETBITS, B_TRUE, &fjs->fjs_brk,
+	    'c', MDB_OPT_STR, &constructor,
+	    'k', MDB_OPT_STR, &propkind,
+	    'l', MDB_OPT_SETBITS, B_TRUE, &listlike,
+	    'm', MDB_OPT_SETBITS, B_TRUE, &fjs->fjs_marking,
+	    'p', MDB_OPT_STR, &propname,
+	    'r', MDB_OPT_SETBITS, B_TRUE, &references,
+	    'v', MDB_OPT_SETBITS, B_TRUE, &fjs->fjs_verbose,
+	    NULL) != argc)
+		return (DCMD_USAGE);
+
+	if (findjsobjects_run(fjs) != 0)
+		return (DCMD_ERR);
 
 	if (listlike && !(flags & DCMD_ADDRSPEC)) {
 		if (propname != NULL || constructor != NULL ||
@@ -4452,7 +4571,7 @@ dcmd_findjsobjects(uintptr_t addr,
 			return (DCMD_ERR);
 		}
 
-		return (findjsobjects_match(&fjs, addr, flags,
+		return (findjsobjects_match(fjs, addr, flags,
 		    findjsobjects_match_all, NULL));
 	}
 
@@ -4464,7 +4583,7 @@ dcmd_findjsobjects(uintptr_t addr,
 			return (DCMD_ERR);
 		}
 
-		return (findjsobjects_match(&fjs, addr, flags,
+		return (findjsobjects_match(fjs, addr, flags,
 		    findjsobjects_match_propname, propname));
 	}
 
@@ -4475,27 +4594,27 @@ dcmd_findjsobjects(uintptr_t addr,
 			return (DCMD_ERR);
 		}
 
-		return (findjsobjects_match(&fjs, addr, flags,
+		return (findjsobjects_match(fjs, addr, flags,
 		    findjsobjects_match_constructor, constructor));
 	}
 
 	if (propkind != NULL) {
-		return (findjsobjects_match(&fjs, addr, flags,
+		return (findjsobjects_match(fjs, addr, flags,
 		    findjsobjects_match_kind, propkind));
 	}
 
 	if (references && !(flags & DCMD_ADDRSPEC) &&
-	    avl_is_empty(&fjs.fjs_referents)) {
+	    avl_is_empty(&fjs->fjs_referents)) {
 		mdb_warn("must specify or mark an object to find references\n");
 		return (DCMD_ERR);
 	}
 
-	if (fjs.fjs_marking && !(flags & DCMD_ADDRSPEC)) {
+	if (fjs->fjs_marking && !(flags & DCMD_ADDRSPEC)) {
 		mdb_warn("must specify an object to mark\n");
 		return (DCMD_ERR);
 	}
 
-	if (references && fjs.fjs_marking) {
+	if (references && fjs->fjs_marking) {
 		mdb_warn("can't both mark an object and find its references\n");
 		return (DCMD_ERR);
 	}
@@ -4509,14 +4628,14 @@ dcmd_findjsobjects(uintptr_t addr,
 		 * specified/marked objects (-r).  (Note that the absence of
 		 * any of these options implies -l.)
 		 */
-		inst = findjsobjects_instance(&fjs, addr, &head);
+		inst = findjsobjects_instance(fjs, addr, &head);
 
 		if (inst == NULL) {
 			mdb_warn("%p is not a valid object\n", addr);
 			return (DCMD_ERR);
 		}
 
-		if (!references && !fjs.fjs_marking) {
+		if (!references && !fjs->fjs_marking) {
 			for (inst = head; inst != NULL; inst = inst->fjsi_next)
 				mdb_printf("%p\n", inst->fjsi_addr);
 
@@ -4524,24 +4643,24 @@ dcmd_findjsobjects(uintptr_t addr,
 		}
 
 		if (!listlike) {
-			findjsobjects_referent(&fjs, inst->fjsi_addr);
+			findjsobjects_referent(fjs, inst->fjsi_addr);
 		} else {
 			for (inst = head; inst != NULL; inst = inst->fjsi_next)
-				findjsobjects_referent(&fjs, inst->fjsi_addr);
+				findjsobjects_referent(fjs, inst->fjsi_addr);
 		}
 	}
 
 	if (references)
-		findjsobjects_references(&fjs);
+		findjsobjects_references(fjs);
 
-	if (references || fjs.fjs_marking)
+	if (references || fjs->fjs_marking)
 		return (DCMD_OK);
 
 	mdb_printf("%?s %8s %8s %s\n", "OBJECT",
 	    "#OBJECTS", "#PROPS", "CONSTRUCTOR: PROPS");
 
-	for (obj = fjs.fjs_objects; obj != NULL; obj = obj->fjso_next) {
-		if (obj->fjso_malformed && !fjs.fjs_allobjs)
+	for (obj = fjs->fjs_objects; obj != NULL; obj = obj->fjso_next) {
+		if (obj->fjso_malformed && !fjs->fjs_allobjs)
 			continue;
 
 		findjsobjects_print(obj);
@@ -4836,6 +4955,146 @@ dcmd_jssource(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		jsfunc_lines(scriptp, tokpos, endpos, nlines, "%5d ");
 	mdb_printf("\n");
 	return (DCMD_OK);
+}
+
+/* ARGSUSED */
+static int
+dcmd_jsfunctions(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
+{
+	findjsobjects_state_t *fjs = &findjsobjects_state;
+	findjsobjects_func_t *func;
+	uintptr_t funcinfo;
+	char *bufp;
+	size_t len;
+	boolean_t showrange = B_FALSE;
+	const char *name = NULL, *filename = NULL;
+	uintptr_t instr = 0;
+
+	if (mdb_getopts(argc, argv,
+	    'x', MDB_OPT_UINTPTR, &instr,
+	    'X', MDB_OPT_SETBITS, B_TRUE, &showrange,
+	    'n', MDB_OPT_STR, &name,
+	    's', MDB_OPT_STR, &filename,
+	    NULL) != argc)
+		return (DCMD_USAGE);
+
+	if (findjsobjects_run(fjs) != 0)
+		return (DCMD_ERR);
+
+	if (!showrange)
+		mdb_printf("%?s %8s %-40s %s\n", "FUNC", "#FUNCS", "NAME",
+		    "FROM");
+	else
+		mdb_printf("%?s %8s %?s %?s %-40s %s\n", "FUNC", "#FUNCS",
+		    "START", "END", "NAME", "FROM");
+
+	for (func = fjs->fjs_funcs; func != NULL; func = func->fjsf_next) {
+		uintptr_t code, ilen;
+
+		funcinfo = func->fjsf_shared;
+
+		if (func->fjsf_location[0] == '\0') {
+			uintptr_t tokpos, script, lends;
+			ptrdiff_t tokposoff =
+			    V8_OFF_SHAREDFUNCTIONINFO_FUNCTION_TOKEN_POSITION;
+
+			if (read_heap_ptr(&tokpos, funcinfo, tokposoff) != 0 ||
+			    read_heap_ptr(&script, funcinfo,
+			    V8_OFF_SHAREDFUNCTIONINFO_SCRIPT) != 0 ||
+			    read_heap_ptr(&lends, script,
+			    V8_OFF_SCRIPT_LINE_ENDS) != 0 ||
+			    jsfunc_lineno(lends, tokpos, func->fjsf_location,
+			    sizeof (func->fjsf_location), NULL) != 0) {
+				func->fjsf_location[0] = '\0';
+			}
+		}
+
+		if (name != NULL && strstr(func->fjsf_funcname, name) == NULL)
+			continue;
+
+		if (filename != NULL &&
+		    strstr(func->fjsf_scriptname, filename) == NULL)
+			continue;
+
+		code = 0;
+		ilen = 0;
+		if ((showrange || instr != 0) &&
+		    (read_heap_ptr(&code, funcinfo,
+		    V8_OFF_SHAREDFUNCTIONINFO_CODE) != 0 ||
+		    read_heap_ptr(&ilen, code,
+		    V8_OFF_CODE_INSTRUCTION_SIZE) != 0)) {
+			code = 0;
+			ilen = 0;
+		}
+
+		if ((instr != 0 && ilen != 0) &&
+		    (instr < code + V8_OFF_CODE_INSTRUCTION_START ||
+		    instr >= code + V8_OFF_CODE_INSTRUCTION_START + ilen))
+			continue;
+
+		if (!showrange) {
+			mdb_printf("%?p %8d %-40s %s %s\n",
+			    func->fjsf_instances.fjsi_addr, func->fjsf_ninstances,
+			    func->fjsf_funcname, func->fjsf_scriptname,
+			    func->fjsf_location);
+		} else {
+			uintptr_t code, ilen;
+
+			if (read_heap_ptr(&code, funcinfo,
+			    V8_OFF_SHAREDFUNCTIONINFO_CODE) != 0 ||
+			    read_heap_ptr(&ilen, code,
+			    V8_OFF_CODE_INSTRUCTION_SIZE) != 0) {
+				mdb_printf("%?p %8d %?s %?s %-40s %s %s\n",
+				    func->fjsf_instances.fjsi_addr,
+				    func->fjsf_ninstances, "?", "?",
+				    func->fjsf_funcname, func->fjsf_scriptname,
+				    func->fjsf_location);
+			} else {
+				mdb_printf("%?p %8d %?p %?p %-40s %s %s\n",
+				    func->fjsf_instances.fjsi_addr,
+				    func->fjsf_ninstances,
+				    code + V8_OFF_CODE_INSTRUCTION_START,
+				    code + V8_OFF_CODE_INSTRUCTION_START + ilen,
+				    func->fjsf_funcname, func->fjsf_scriptname,
+				    func->fjsf_location);
+			}
+		}
+	}
+
+	return (DCMD_OK);
+}
+
+static void
+dcmd_jsfunctions_help(void)
+{
+	mdb_printf("%s\n\n",
+"Lists JavaScript functions, optionally filtered by a substring of the\n"
+"function name or script filename or by the instruction address.  This uses\n"
+"the cache created by ::findjsobjects.  If ::findjsobjects has not already\n"
+"been run, this command runs it automatically without printing the output.\n"
+"This can take anywhere from a second to several minutes, depending on the\n"
+"size of the core dump.\n"
+"\n"
+"It's important to keep in mind that each time you create a function in\n"
+"JavaScript (even from a function definition that has already been used),\n"
+"the VM must create a new object to represent it.  For example, if your\n"
+"program has a function A that returns a closure B, the VM will create new\n"
+"instances of the closure function (B) each time the surrounding function (A)\n"
+"is called.  To show this, the output of this command consists of one line \n"
+"per function definition that appears in the JavaScript source, and the\n"
+"\"#FUNCS\" column shows how many different functions were created by VM from\n"
+"this definition.");
+
+	mdb_dec_indent(2);
+	mdb_printf("%<b>OPTIONS%</b>\n");
+	mdb_inc_indent(2);
+
+	mdb_printf("%s\n",
+"  -f file  List functions that were defined in a file whose name contains this\n"
+"           substring.\n"
+"  -n func  List functions whose name contains this substring\n"
+"  -x instr List functions whose compiled instructions include this address\n"
+"  -X       Show where the function's instructions are stored in memory\n");
 }
 
 /* ARGSUSED */
@@ -5198,6 +5457,9 @@ static const mdb_dcmd_t v8_mdb_dcmds[] = {
 		"print a JavaScript stacktrace", dcmd_jsstack },
 	{ "findjsobjects", "?[-vb] [-r | -c cons | -p prop]", "find JavaScript "
 		"objects", dcmd_findjsobjects, dcmd_findjsobjects_help },
+	{ "jsfunctions", "[-X] [-f file_filter] [-n name_filter] "
+	    "[-x instr_filter]", "list JavaScript functions",
+	    dcmd_jsfunctions, dcmd_jsfunctions_help },
 
 	/*
 	 * Commands to inspect V8-level state
