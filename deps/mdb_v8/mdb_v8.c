@@ -145,6 +145,8 @@ static intptr_t	V8_DICT_SHIFT;
 static intptr_t	V8_DICT_PREFIX_SIZE;
 static intptr_t	V8_DICT_ENTRY_SIZE;
 static intptr_t	V8_DICT_START_INDEX;
+static intptr_t	V8_FIELDINDEX_MASK;
+static intptr_t	V8_FIELDINDEX_SHIFT;
 static intptr_t	V8_PROP_IDX_CONTENT;
 static intptr_t	V8_PROP_IDX_FIRST;
 static intptr_t	V8_PROP_TYPE_FIELD;
@@ -283,6 +285,10 @@ static v8_constant_t v8_constants[] = {
 	    V8_CONSTANT_FALLBACK(3, 11), 3 },
 	{ &V8_DICT_START_INDEX,		"v8dbg_dict_start_index",
 	    V8_CONSTANT_FALLBACK(3, 11), 3 },
+	{ &V8_FIELDINDEX_MASK,		"v8dbg_fieldindex_mask",
+	    V8_CONSTANT_FALLBACK(3, 26), 0x3ff00000 },
+	{ &V8_FIELDINDEX_SHIFT,		"v8dbg_fieldindex_shift",
+	    V8_CONSTANT_FALLBACK(3, 26), 20 },
 	{ &V8_ISSHARED_SHIFT,		"v8dbg_isshared_shift",
 	    V8_CONSTANT_FALLBACK(3, 11), 0 },
 	{ &V8_PROP_IDX_FIRST,		"v8dbg_prop_idx_first"		},
@@ -1235,8 +1241,8 @@ read_heap_dict(uintptr_t addr,
 
 		if (V8_IS_SMI(dict[i])) {
 			intptr_t val = V8_SMI_VALUE(dict[i]);
-			(void) snprintf(buf, sizeof (buf), "%ld",
-			    (uint64_t)val);
+			(void) snprintf(buf, sizeof (buf), "%lld",
+			    (int64_t)val);
 		} else {
 			if (jsobj_is_hole(dict[i])) {
 				/*

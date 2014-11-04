@@ -126,6 +126,11 @@ consts_misc = [
     { 'name': 'elements_dictionary_elements',
         'value': 'DICTIONARY_ELEMENTS' },
 
+    { 'name': 'fieldindex_mask',
+        'value': 'PropertyDetails::FieldIndexField::kMask' },
+    { 'name': 'fieldindex_shift',
+        'value': 'PropertyDetails::FieldIndexField::kShift' },
+
     { 'name': 'off_fp_context',
         'value': 'StandardFrameConstants::kContextOffset' },
     { 'name': 'off_fp_constant_pool',
