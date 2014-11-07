@@ -2429,9 +2429,14 @@ jsfunc_lineno(uintptr_t lendsp, uintptr_t tokpos,
 		 * The token position is an SMI, but it comes in as its raw
 		 * value so we can more easily compare it to values in the line
 		 * endings table.  If we're just printing the position directly,
-		 * we must convert it here.
+		 * we must convert it here, unless we're checking against the
+		 * "-1" sentinel.
 		 */
-		mdb_snprintf(buf, buflen, "position %d", V8_SMI_VALUE(tokpos));
+		if (tokpos == V8_VALUE_SMI(-1))
+			mdb_snprintf(buf, buflen, "unknown position");
+		else
+			mdb_snprintf(buf, buflen, "position %d",
+			    V8_SMI_VALUE(tokpos));
 
 		if (lineno != NULL)
 			*lineno = 0;
@@ -5458,7 +5463,7 @@ static const mdb_dcmd_t v8_mdb_dcmds[] = {
 		"print a JavaScript stacktrace", dcmd_jsstack },
 	{ "findjsobjects", "?[-vb] [-r | -c cons | -p prop]", "find JavaScript "
 		"objects", dcmd_findjsobjects, dcmd_findjsobjects_help },
-	{ "jsfunctions", "[-X] [-f file_filter] [-n name_filter] "
+	{ "jsfunctions", "[-X] [-s file_filter] [-n name_filter] "
 	    "[-x instr_filter]", "list JavaScript functions",
 	    dcmd_jsfunctions, dcmd_jsfunctions_help },
 

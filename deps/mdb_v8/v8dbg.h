@@ -48,6 +48,8 @@
  * using the upper 31 bits.
  */
 #define	V8_SMI_VALUE(smi)	((smi) >> (V8_SmiValueShift + V8_SmiShiftSize))
+#define	V8_VALUE_SMI(value)	\
+	((value) << (V8_SmiValueShift + V8_SmiShiftSize))
 
 /*
  * Determine the encoding and representation of a V8 string.
