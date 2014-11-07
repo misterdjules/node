@@ -47,6 +47,7 @@
 #include <sys/mdb_modapi.h>
 #include <assert.h>
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -1154,6 +1155,46 @@ read_heap_byte(uint8_t *valp, uintptr_t addr, ssize_t off)
 }
 
 /*
+ * This is truly horrific.  Inside the V8 Script class are a number of
+ * small-integer fields like the function_token_position (an offset into the
+ * script's text where the "function" token appears).  For 32-bit processes, V8
+ * stores these as a sequence of SMI fields, which we know how to interpret well
+ * enough.  For 64-bit processes, "to avoid wasting space", they use a different
+ * trick: each 8-byte word contains two integer fields.  The low word is
+ * represented like an SMI: shifted left by one.  They don't bother shifting the
+ * high word, since its low bit will never be looked at (since it's not
+ * word-aligned).
+ *
+ * This function is used for cases where we would use read_heap_smi(), except
+ * that this is one of those fields that might be encoded or might not be,
+ * depending on whether the address is word-aligned.
+ */
+static int
+read_heap_maybesmi(uintptr_t *valp, uintptr_t addr, ssize_t off)
+{
+#ifdef _LP64
+	uint32_t readval;
+
+	if (mdb_vread(&readval, sizeof (readval), addr + off) == -1) {
+		*valp = -1;
+		v8_warn("failed to read offset %d from %p", off, addr);
+		return (-1);
+	}
+
+	/*
+	 * If this was the low half-word, it needs to be shifted right.
+	 */
+	if ((addr + off) % sizeof (uintptr_t) == 0)
+		readval >>= 1;
+
+	*valp = (uintptr_t)readval;
+	return (0);
+#else
+	return (read_heap_smi(valp, addr, off));
+#endif
+}
+
+/*
  * Given a heap object, returns in *valp the byte describing the type of the
  * object.  This is shorthand for first retrieving the Map at the start of the
  * heap object and then retrieving the type byte from the Map object.
@@ -1241,8 +1282,7 @@ read_heap_dict(uintptr_t addr,
 
 		if (V8_IS_SMI(dict[i])) {
 			intptr_t val = V8_SMI_VALUE(dict[i]);
-			(void) snprintf(buf, sizeof (buf), "%lld",
-			    (int64_t)val);
+			(void) snprintf(buf, sizeof (buf), "%" PRIdPTR, val);
 		} else {
 			if (jsobj_is_hole(dict[i])) {
 				/*
@@ -2114,7 +2154,7 @@ jsobj_properties(uintptr_t addr,
 				    jsobj_is_hole(elts[ii]))
 					continue;
 
-				snprintf(name, sizeof (name), "%d", ii);
+				snprintf(name, sizeof (name), "%" PRIdPTR, ii);
 
 				if (func(name, elts[ii], arg) != 0) {
 					mdb_free(elts, sz);
@@ -2562,7 +2602,7 @@ jsfunc_lines(uintptr_t scriptp,
 
 	if (startline == -1 || endline == -1) {
 		mdb_warn("for script %p, could not determine startline/endline"
-		    " (start %ld, end %ld, nlines %d)",
+		    " (start %ld, end %ld, nlines %d)\n",
 		    scriptp, start, end, nlines);
 		mdb_free(buf, bufsz);
 		return;
@@ -3138,13 +3178,20 @@ dcmd_v8function(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	}
 
 	if (read_heap_ptr(&funcinfop, addr, V8_OFF_JSFUNCTION_SHARED) != 0 ||
-	    read_heap_ptr(&tokpos, funcinfop,
+	    read_heap_maybesmi(&tokpos, funcinfop,
 	    V8_OFF_SHAREDFUNCTIONINFO_FUNCTION_TOKEN_POSITION) != 0 ||
 	    read_heap_ptr(&scriptp, funcinfop,
 	    V8_OFF_SHAREDFUNCTIONINFO_SCRIPT) != 0 ||
 	    read_heap_ptr(&namep, scriptp, V8_OFF_SCRIPT_NAME) != 0 ||
 	    read_heap_ptr(&lendsp, scriptp, V8_OFF_SCRIPT_LINE_ENDS) != 0)
 		goto err;
+
+	/*
+	 * The token position is normally a SMI, so read_heap_maybesmi() will
+	 * interpret the value for us.  However, this code uses its SMI-encoded
+	 * value, so convert it back here.
+	 */
+	tokpos = V8_VALUE_SMI(tokpos);
 
 	bufp = buf;
 	len = sizeof (buf);
@@ -3538,9 +3585,10 @@ do_jsframe(uintptr_t fptr, uintptr_t raddr, jsframe_t *jsf)
 	 * Although the token position is technically an SMI, we're going to
 	 * byte-compare it to other SMI values so we don't want decode it here.
 	 */
-	if (read_heap_ptr(&tokpos, funcinfop,
+	if (read_heap_maybesmi(&tokpos, funcinfop,
 	    V8_OFF_SHAREDFUNCTIONINFO_FUNCTION_TOKEN_POSITION) != 0)
 		return (DCMD_ERR);
+	tokpos = V8_VALUE_SMI(tokpos);
 
 	if (read_heap_ptr(&scriptp, funcinfop,
 	    V8_OFF_SHAREDFUNCTIONINFO_SCRIPT) != 0)
@@ -3576,7 +3624,7 @@ do_jsframe(uintptr_t fptr, uintptr_t raddr, jsframe_t *jsf)
 	if (prop == NULL)
 		mdb_printf("posn: %s\n", buf);
 
-	if (read_heap_smi(&nargs, funcinfop,
+	if (read_heap_maybesmi(&nargs, funcinfop,
 	    V8_OFF_SHAREDFUNCTIONINFO_LENGTH) == 0) {
 		uintptr_t argptr;
 		char arg[10];
@@ -3605,7 +3653,8 @@ do_jsframe(uintptr_t fptr, uintptr_t raddr, jsframe_t *jsf)
 			    sizeof (uintptr_t)) == -1)
 				continue;
 
-			(void) snprintf(arg, sizeof (arg), "arg%d", ii + 1);
+			(void) snprintf(arg, sizeof (arg), "arg%" PRIuPTR,
+			    ii + 1);
 
 			if (prop != NULL) {
 				if (strcmp(arg, prop) != 0)
@@ -3629,7 +3678,7 @@ do_jsframe(uintptr_t fptr, uintptr_t raddr, jsframe_t *jsf)
 		return (DCMD_ERR);
 	}
 
-	if (nlines != 0 && read_heap_smi(&endpos, funcinfop,
+	if (nlines != 0 && read_heap_maybesmi(&endpos, funcinfop,
 	    V8_OFF_SHAREDFUNCTIONINFO_END_POSITION) == 0) {
 		jsfunc_lines(scriptp,
 		    V8_SMI_VALUE(tokpos), endpos, nlines, "%5d ");
@@ -4949,9 +4998,9 @@ dcmd_jssource(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		return (DCMD_ERR);
 	}
 
-	if (read_heap_smi(&tokpos, funcinfop,
+	if (read_heap_maybesmi(&tokpos, funcinfop,
 	    V8_OFF_SHAREDFUNCTIONINFO_FUNCTION_TOKEN_POSITION) != 0 ||
-	    read_heap_smi(&endpos, funcinfop,
+	    read_heap_maybesmi(&endpos, funcinfop,
 	    V8_OFF_SHAREDFUNCTIONINFO_END_POSITION) != 0) {
 		mdb_warn("%p: failed to find function's boundaries\n", addr);
 	}
@@ -5004,12 +5053,19 @@ dcmd_jsfunctions(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 			ptrdiff_t tokposoff =
 			    V8_OFF_SHAREDFUNCTIONINFO_FUNCTION_TOKEN_POSITION;
 
-			if (read_heap_ptr(&tokpos, funcinfo, tokposoff) != 0 ||
+			/*
+			 * We don't want to actually decode the token position
+			 * as an SMI here, so we re-encode it when we pass it to
+			 * jsfunc_lineno() below.
+			 */
+			if (read_heap_maybesmi(&tokpos, funcinfo,
+			    tokposoff) != 0 ||
 			    read_heap_ptr(&script, funcinfo,
 			    V8_OFF_SHAREDFUNCTIONINFO_SCRIPT) != 0 ||
 			    read_heap_ptr(&lends, script,
 			    V8_OFF_SCRIPT_LINE_ENDS) != 0 ||
-			    jsfunc_lineno(lends, tokpos, func->fjsf_location,
+			    jsfunc_lineno(lends, V8_VALUE_SMI(tokpos),
+			    func->fjsf_location,
 			    sizeof (func->fjsf_location), NULL) != 0) {
 				func->fjsf_location[0] = '\0';
 			}
