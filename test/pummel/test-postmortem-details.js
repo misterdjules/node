@@ -147,7 +147,7 @@ gcore.on('exit', function (code) {
   });
   verifiers.push(function verifyJsfunctionN(testlines) {
     assert.equal(testlines.length, 2);
-    var parts = testlines[1].split(/\s+/);
+    var parts = testlines[1].trim().split(/\s+/);
     assert.equal(parts[1], 1);
     assert.equal(parts[2], 'myTestFunction');
     assert.ok(parts[3].indexOf('test-postmortem-details.js') != -1);
@@ -156,7 +156,7 @@ gcore.on('exit', function (code) {
     var foundtest = false, founditer = false;
     assert.ok(testlines.length > 1);
     testlines.forEach(function (line) {
-      var parts = line.split(/\s+/);
+      var parts = line.trim().split(/\s+/);
       if (parts[2] == 'myIterFunction') {
         assert.equal(parts[1], '3');
         founditer = true;
