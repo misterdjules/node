@@ -215,7 +215,7 @@ static ssize_t V8_OFF_SLICEDSTRING_PARENT;
 static ssize_t V8_OFF_SLICEDSTRING_OFFSET;
 static ssize_t V8_OFF_STRING_LENGTH;
 
-#define	NODE_OFF_EXTSTR_DATA		0x4	/* see node_string.h */
+#define	NODE_OFF_EXTSTR_DATA		sizeof (uintptr_t)	/* see node_string.h */
 
 #define	V8_CONSTANT_OPTIONAL		1
 #define	V8_CONSTANT_HASFALLBACK		2
