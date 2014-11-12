@@ -215,7 +215,8 @@ static ssize_t V8_OFF_SLICEDSTRING_PARENT;
 static ssize_t V8_OFF_SLICEDSTRING_OFFSET;
 static ssize_t V8_OFF_STRING_LENGTH;
 
-#define	NODE_OFF_EXTSTR_DATA		sizeof (uintptr_t)	/* see node_string.h */
+/* see node_string.h */
+#define	NODE_OFF_EXTSTR_DATA		sizeof (uintptr_t)
 
 #define	V8_CONSTANT_OPTIONAL		1
 #define	V8_CONSTANT_HASFALLBACK		2
@@ -5572,19 +5573,24 @@ configure(void)
 	char *success;
 	v8_cfg_t *cfgp = NULL;
 	GElf_Sym sym;
+	int major, minor, build, patch;
 
-	if (mdb_readsym(&v8_major, sizeof (v8_major),
+	if (mdb_readsym(&major, sizeof (major),
 	    "_ZN2v88internal7Version6major_E") == -1 ||
-	    mdb_readsym(&v8_minor, sizeof (v8_minor),
+	    mdb_readsym(&minor, sizeof (minor),
 	    "_ZN2v88internal7Version6minor_E") == -1 ||
-	    mdb_readsym(&v8_build, sizeof (v8_build),
+	    mdb_readsym(&build, sizeof (build),
 	    "_ZN2v88internal7Version6build_E") == -1 ||
-	    mdb_readsym(&v8_patch, sizeof (v8_patch),
+	    mdb_readsym(&patch, sizeof (patch),
 	    "_ZN2v88internal7Version6patch_E") == -1) {
 		mdb_warn("failed to determine V8 version");
 		return;
 	}
 
+	v8_major = major;
+	v8_minor = minor;
+	v8_build = build;
+	v8_patch = patch;
 	mdb_printf("V8 version: %d.%d.%d.%d\n",
 	    v8_major, v8_minor, v8_build, v8_patch);
 
