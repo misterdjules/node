@@ -1687,22 +1687,21 @@ jsstr_print_seq(uintptr_t addr, uint_t flags, char **bufp, size_t *lenp,
 	if (slicelen != -1)
 		nstrchrs = slicelen;
 
+	blen = ((flags & JSSTR_ISASCII) != 0) ? *lenp : 2 * (*lenp);
+	if ((blen = MIN(blen, 256 * 1024)) == 0)
+		return (0);
+
 	if ((flags & JSSTR_ISASCII) != 0) {
-		blen = *lenp;
 		nstrbytes = nstrchrs;
 		nreadoffset = sliceoffset;
 		nreadbytes = nstrbytes + sizeof ("\"\"") <= blen ?
 		    nstrbytes : blen - sizeof ("\"\"[...]");
 	} else {
-		blen = 2 * (*lenp);
 		nstrbytes = 2 * nstrchrs;
 		nreadoffset = 2 * sliceoffset;
 		nreadbytes = nstrchrs + sizeof ("\"\"") <= blen ?
-		    nstrbytes : 2 * (blen - sizeof ("\"\"[...]"));
+		    nstrbytes : 2 * (*lenp - sizeof ("\"\"[...]"));
 	}
-
-	if ((blen = MIN(blen, 256 * 1024)) == 0)
-		return (0);
 
 	if (nreadbytes < 0) {
 		/*
@@ -1714,10 +1713,13 @@ jsstr_print_seq(uintptr_t addr, uint_t flags, char **bufp, size_t *lenp,
 		return (0);
 	}
 
-	if (verbose)
+	if (verbose) {
 		mdb_printf("length: %d chars (%d bytes), "
 		    "will read %d bytes from offset %d\n",
 		    nstrchrs, nstrbytes, nreadbytes, nreadoffset);
+		mdb_printf("given buffer size: %d, internal buffer: %d\n",
+		    *lenp, blen);
+	}
 
 	if (nstrbytes == 0) {
 		(void) bsnprintf(bufp, lenp, "%s%s",
