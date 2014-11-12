@@ -1694,12 +1694,12 @@ jsstr_print_seq(uintptr_t addr, uint_t flags, char **bufp, size_t *lenp,
 	if ((flags & JSSTR_ISASCII) != 0) {
 		nstrbytes = nstrchrs;
 		nreadoffset = sliceoffset;
-		nreadbytes = nstrbytes + sizeof ("\"\"") <= blen ?
-		    nstrbytes : blen - sizeof ("\"\"[...]");
+		nreadbytes = nstrbytes + sizeof ("\"\"") <= *lenp ?
+		    nstrbytes : *lenp - sizeof ("\"\"[...]");
 	} else {
 		nstrbytes = 2 * nstrchrs;
 		nreadoffset = 2 * sliceoffset;
-		nreadbytes = nstrchrs + sizeof ("\"\"") <= blen ?
+		nreadbytes = nstrchrs + sizeof ("\"\"") <= *lenp ?
 		    nstrbytes : 2 * (*lenp - sizeof ("\"\"[...]"));
 	}
 
