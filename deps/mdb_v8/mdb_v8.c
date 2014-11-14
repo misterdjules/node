@@ -148,7 +148,6 @@ static intptr_t	V8_DICT_START_INDEX;
 static intptr_t	V8_PROP_IDX_CONTENT;
 static intptr_t	V8_PROP_IDX_FIRST;
 static intptr_t	V8_PROP_TYPE_FIELD;
-static intptr_t	V8_PROP_FIRST_PHANTOM;
 static intptr_t	V8_PROP_TYPE_MASK;
 static intptr_t	V8_PROP_DESC_KEY;
 static intptr_t	V8_PROP_DESC_DETAILS;
@@ -259,8 +258,10 @@ static v8_constant_t v8_constants[] = {
 	{ &V8_SlicedStringTag,		"v8dbg_SlicedStringTag",
 	    V8_CONSTANT_FALLBACK(0, 0), 0x3 },
 	{ &V8_ExternalStringTag,	"v8dbg_ExternalStringTag"	},
-	{ &V8_FailureTag,		"v8dbg_FailureTag"		},
-	{ &V8_FailureTagMask,		"v8dbg_FailureTagMask"		},
+	{ &V8_FailureTag,		"v8dbg_FailureTag",
+		V8_CONSTANT_FALLBACK(3, 26), 0x3 },
+	{ &V8_FailureTagMask,		"v8dbg_FailureTagMask",
+		V8_CONSTANT_FALLBACK(3, 26), 0x3 },
 	{ &V8_HeapObjectTag,		"v8dbg_HeapObjectTag"		},
 	{ &V8_HeapObjectTagMask,	"v8dbg_HeapObjectTagMask"	},
 	{ &V8_SmiTag,			"v8dbg_SmiTag"			},
@@ -285,8 +286,7 @@ static v8_constant_t v8_constants[] = {
 	{ &V8_ISSHARED_SHIFT,		"v8dbg_isshared_shift",
 	    V8_CONSTANT_FALLBACK(3, 11), 0 },
 	{ &V8_PROP_IDX_FIRST,		"v8dbg_prop_idx_first"		},
-	{ &V8_PROP_TYPE_FIELD,		"v8dbg_prop_type_field"		},
-	{ &V8_PROP_FIRST_PHANTOM,	"v8dbg_prop_type_first_phantom"	},
+	{ &V8_PROP_TYPE_FIELD,		"v8dbg_prop_type_field"     },
 	{ &V8_PROP_TYPE_MASK,		"v8dbg_prop_type_mask"		},
 	{ &V8_PROP_IDX_CONTENT,		"v8dbg_prop_idx_content",
 	    V8_CONSTANT_OPTIONAL },
@@ -480,6 +480,11 @@ autoconfigure(v8_cfg_t *cfgp)
 			continue;
 		}
 
+		/*
+		 * If the constant doesn't have any fallback, or if it has
+		 * a fallback but the version of V8 used by the debuggee should
+		 * have the symbol present, then consider that it's an error.
+		 */
 		if (!(cnp->v8c_flags & V8_CONSTANT_HASFALLBACK) ||
 		    v8_major < V8_CONSTANT_MAJOR(cnp->v8c_flags) ||
 		    (v8_major == V8_CONSTANT_MAJOR(cnp->v8c_flags) &&
