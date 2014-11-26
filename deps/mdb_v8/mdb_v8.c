@@ -1044,11 +1044,8 @@ v8_warn(const char *format, ...)
 	}
 }
 
-/*
- * Returns in "offp" the offset of field "field" in C++ class "klass".
- */
-static int
-heap_offset(const char *klass, const char *field, ssize_t *offp)
+static v8_field_t *
+conf_field_lookup(const char *klass, const char *field)
 {
 	v8_class_t *clp;
 	v8_field_t *flp;
@@ -1059,15 +1056,28 @@ heap_offset(const char *klass, const char *field, ssize_t *offp)
 	}
 
 	if (clp == NULL)
-		return (-1);
+		return (NULL);
 
 	for (flp = clp->v8c_fields; flp != NULL; flp = flp->v8f_next) {
 		if (strcmp(field, flp->v8f_name) == 0)
 			break;
 	}
 
-	if (flp == NULL)
-		return (-1);
+	return (flp);
+}
+
+/*
+ * Returns in "offp" the offset of field "field" in C++ class "klass".
+ */
+static int
+heap_offset(const char *klass, const char *field, ssize_t *offp)
+{
+       v8_field_t *flp;
+
+       flp = conf_field_lookup(klass, field);
+
+	   if (flp == NULL)
+			   return (-1);
 
 	*offp = V8_OFF_HEAP(flp->v8f_offset);
 	return (0);
@@ -2195,6 +2205,7 @@ jsobj_properties(uintptr_t addr,
 	}
 
 	if (V8_DICT_SHIFT != -1) {
+		v8_field_t *flp;
 		uintptr_t bit_field3;
 
 		/*
@@ -2202,12 +2213,36 @@ jsobj_properties(uintptr_t addr,
 		 * offset is not -1), then bitfield 3 tells us if the properties
 		 * for this object are stored in "properties" field of the
 		 * object using a Dictionary representation.
+		 *
+		 * Versions of V8 prior to Node 0.12 treated bit_field3 as an
+		 * SMI, so it was pointer-sized, and it has to be converted from
+		 * an SMI before using it.  In 0.12, it's treated as a raw
+		 * uint32_t, meaning it's always int-sized and it should not be
+		 * converted.  We can tell which case we're in because the debug
+		 * constant (v8dbg_class_map__bit_field3__TYPE) tells us whether
+		 * the TYPE is "SMI" or "int".
 		 */
-		if (mdb_vread(&bit_field3, sizeof (bit_field3),
-		    map + V8_OFF_MAP_BIT_FIELD3) == -1)
-			goto err;
 
-		if (V8_SMI_VALUE(bit_field3) & (1 << V8_DICT_SHIFT)) {
+		flp = conf_field_lookup("Map", "bit_field3");
+		if (flp == NULL || flp->v8f_isbyte) {
+			/*
+			 * v8f_isbyte indicates the type is "int", so we're in
+			 * the int-sized not-a-SMI world.
+			 */
+			unsigned int bf3_value;
+			if (mdb_vread(&bf3_value, sizeof (bf3_value),
+				map + V8_OFF_MAP_BIT_FIELD3) == -1)
+				goto err;
+			bit_field3 = (uintptr_t)bf3_value;
+		} else {
+			/* The metadata indicates this is an SMI. */
+			if (mdb_vread(&bit_field3, sizeof (bit_field3),
+				map + V8_OFF_MAP_BIT_FIELD3) == -1)
+					goto err;
+			bit_field3 = V8_SMI_VALUE(bit_field3);
+		}
+
+		if (bit_field3 & (1 << V8_DICT_SHIFT)) {
 			propinfo |= JPI_DICT;
 			if (propinfop != NULL)
 				*propinfop = propinfo;
