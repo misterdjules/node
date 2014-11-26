@@ -430,10 +430,12 @@ int ZEXPORT deflateParams(strm, level, strategy)
         return Z_STREAM_ERROR;
     }
     func = configuration_table[s->level].func;
-
+    //if (func != configuration_table[level].func && strm->total_in != 0) {
     if ((strategy != s->strategy || func != configuration_table[level].func) &&
         strm->total_in != 0) {
         /* Flush the last buffer: */
+        printf("Flusing the last buffer!\n");
+        //err = deflate(strm, Z_PARTIAL_FLUSH);
         err = deflate(strm, Z_BLOCK);
     }
     if (s->level != level) {
