@@ -256,7 +256,7 @@ TARBALL=$(TARNAME).tar.gz
 BINARYNAME=$(TARNAME)-$(PLATFORM)-$(ARCH)
 BINARYTAR=$(BINARYNAME).tar.gz
 PKG=out/$(TARNAME).pkg
-packagemaker=/Developer/Applications/Utilities/PackageMaker.app/Contents/MacOS/PackageMaker
+packagemaker=/Applications/PackageMaker.app/Contents/MacOS/PackageMaker
 
 PKGSRC=nodejs-$(DESTCPU)-$(RAWVER).tgz
 ifdef NIGHTLY
@@ -294,10 +294,10 @@ pkg: $(PKG)
 $(PKG): release-only
 	rm -rf $(PKGDIR)
 	rm -rf out/deps out/Release
-	$(PYTHON) ./configure --without-snapshot --dest-cpu=ia32 --tag=$(TAG)
+	$(PYTHON) ./configure --with-intl=small-icu --without-snapshot --dest-cpu=ia32 --tag=$(TAG)
 	$(MAKE) install V=$(V) DESTDIR=$(PKGDIR)/32
 	rm -rf out/deps out/Release
-	$(PYTHON) ./configure --without-snapshot --dest-cpu=x64 --tag=$(TAG)
+	$(PYTHON) ./configure --with-intl=small-icu --without-snapshot --dest-cpu=x64 --tag=$(TAG)
 	$(MAKE) install V=$(V) DESTDIR=$(PKGDIR)
 	SIGN="$(APP_SIGN)" PKGDIR="$(PKGDIR)" bash tools/osx-codesign.sh
 	lipo $(PKGDIR)/32/usr/local/bin/node \
