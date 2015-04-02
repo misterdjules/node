@@ -31,8 +31,13 @@ ssh root@nodejs.org chown -R node:other /home/node/dist/v$(python tools/getnodev
 
 # tag the release
 # should be the same key used to sign the shasums
-git tag -sm "$(bash tools/changelog-head.sh)" v$(python tools/getnodeversion.py)
- 
+if [ "$tag" = "" ];
+then
+  git tag -sm "$(bash tools/changelog-head.sh)" v$(python tools/getnodeversion.py)
+else
+  git tag -sm "$(python tools/getnodeversion.py)" v$(python tools/getnodeversion.py)
+fi
+
 # push to github
 git push git@github.com:joyent/node v$(python tools/getnodeversion.py)-release --tags 
 
@@ -72,15 +77,20 @@ fi
 
 echo "Merging back into $BRANCH"
 
-# merge back into mainline stable branch
-git checkout $BRANCH
-git merge --no-ff v$(python tools/getnodeversion.py)-release
- 
-# change the version number, set isrelease = 0
-## TODO automagic.
-vim src/node_version.h
-git commit -am "Now working on "$(python tools/getnodeversion.py)
+if [ "$tag" = "" ];
+then
+  echo "Merging back into $BRANCH"
 
-git push git@github.com:joyent/node $BRANCH
+  # merge back into mainline stable branch
+  git checkout $BRANCH
+  git merge --no-ff v$(python tools/getnodeversion.py)-release
+
+  # change the version number, set isrelease = 0
+  ## TODO automagic.
+  vim src/node_version.h
+  git commit -am "Now working on "$(python tools/getnodeversion.py)
+
+  git push git@github.com:misterdjules/node $BRANCH
+fi
 
 echo "Now go do the website stuff"

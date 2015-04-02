@@ -19,9 +19,21 @@ for line in f:
   if tag_match:
     tag = tag_match.group(1)
 
-version_string = '%(major)s.%(minor)s.%(patch)s'% locals()
-if tag:
-    version_string += '-%(tag)s'% locals()
+def get_version_string(major, minor, patch, tag, msi=False):
+    version_string = '%(major)s.%(minor)s.%(patch)s'% locals()
+    if tag:
+        if msi:
+            rc_number_match = re.match('.*(\d+)$', tag)
+            if rc_number_match and rc_number_match.group(1):
+                rc_number = rc_number_match.group(1)
+                version_string += '.%(rc_number)s'% locals()
+            else:
+                sys.stderr.write('Could not determine proper rc number for msi version, exiting')
+                sys.exit(1)
+        else:
+            version_string += '-%(tag)s'% locals()
+
+    return version_string
 
 if len(sys.argv) > 1:
     if sys.argv[1] == '--stability':
@@ -32,5 +44,7 @@ if len(sys.argv) > 1:
     elif sys.argv[1] == '--tag':
         if tag:
             print tag
+    elif sys.argv[1] == '--msi':
+        print get_version_string(major, minor, patch, tag, msi=True)
 else:
-    print version_string
+    print get_version_string(major, minor, patch, tag)
