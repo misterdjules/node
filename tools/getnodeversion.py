@@ -1,4 +1,4 @@
-import os,re
+import os,re, sys
 
 node_version_h = os.path.join(os.path.dirname(__file__), '..', 'src',
     'node_version.h')
@@ -15,12 +15,22 @@ for line in f:
   if re.match('#define NODE_PATCH_VERSION', line):
     patch = line.split()[2]
 
-  rc_match = re.match('#define NODE_TAG (.*)', line)
-  if rc_match:
-    tag = rc_match.group(1)
+  tag_match = re.match('#define NODE_TAG (.*)', line)
+  if tag_match:
+    tag = tag_match.group(1)
 
 version_string = '%(major)s.%(minor)s.%(patch)s'% locals()
 if tag:
     version_string += '-%(tag)s'% locals()
 
-print version_string
+if len(sys.argv) > 1:
+    if sys.argv[1] == '--stability':
+        if int(minor) % 2 == 0:
+          print 'stable'
+        else:
+          print 'unstable'
+    elif sys.argv[1] == '--tag':
+        if tag:
+            print tag
+else:
+    print version_string

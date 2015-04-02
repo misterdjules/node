@@ -10,9 +10,11 @@ then
   exit 1
 fi
 
-stability="$(python tools/getstability.py)"
+stability="$(python tools/getnodeversion.py --stability)"
 NODE_STABC="$(tr '[:lower:]' '[:upper:]' <<< ${stability:0:1})${stability:1}"
 NODE_STABL="$stability"
+
+tag="$(python tools/getnodeversion.py --tag)"
 
 echo "Building for $stability"
 
@@ -56,7 +58,12 @@ then
   ## this needs to happen here because the website depends on the current node
   ## node version
   ## this will get the api docs in the right place
-  make website-upload
+  ## Do NOT upload API documentation (or anything related to the website)
+  ## for tagged releases (such as release candidates)
+  if [ "$tag" = "" ];
+  then
+    make website-upload
+  fi
   BRANCH="v$(python tools/getnodeversion.py | sed -E 's#\.[0-9]+(-[A-Za-z0-9]+)?$##')"
   echo $(python tools/getnodeversion.py) > ../node-website/STABLE
 else
