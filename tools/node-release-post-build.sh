@@ -57,7 +57,7 @@ then
   ## node version
   ## this will get the api docs in the right place
   make website-upload
-  BRANCH="v$(python tools/getnodeversion.py | sed -E 's#\.[0-9]+$##')"
+  BRANCH="v$(python tools/getnodeversion.py | sed -E 's#\.[0-9]+(-[A-Za-z0-9]+)?$##')"
   echo $(python tools/getnodeversion.py) > ../node-website/STABLE
 else
   BRANCH="master"
