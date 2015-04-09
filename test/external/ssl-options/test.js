@@ -340,7 +340,8 @@ function runClient(port, secureProtocol, secureOptions, ciphers) {
                         {
                           rejectUnauthorized: false,
                           secureProtocol: secureProtocol,
-                          secureOptions: secureOptions
+                          secureOptions: secureOptions,
+                          ciphers: ciphers
                         },
                         function() {
 
