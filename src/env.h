@@ -89,6 +89,7 @@ namespace node {
   V(exchange_string, "exchange")                                              \
   V(idle_string, "idle")                                                      \
   V(irq_string, "irq")                                                        \
+  V(emitting_toplevel_domain_error_string, "_emittingTopLevelDomainError")    \
   V(enter_string, "enter")                                                    \
   V(env_pairs_string, "envPairs")                                             \
   V(env_string, "env")                                                        \

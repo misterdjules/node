@@ -724,6 +724,9 @@ class Isolate {
   void CaptureAndSetSimpleStackTrace(Handle<JSObject> error_object,
                                      Handle<Object> caller);
 
+  typedef bool (*abort_on_uncaught_exception_t)(v8::Isolate*);
+  void SetAbortOnUncaughtException(abort_on_uncaught_exception_t callback);
+
   // Returns if the top context may access the given global object. If
   // the result is false, the pending exception is guaranteed to be
   // set.
@@ -1330,6 +1333,7 @@ class Isolate {
   List<CallCompletedCallback> call_completed_callbacks_;
 
   v8::Isolate::UseCounterCallback use_counter_callback_;
+  abort_on_uncaught_exception_t abort_on_uncaught_exception_callback_;
 
   friend class ExecutionAccess;
   friend class HandleScopeImplementer;

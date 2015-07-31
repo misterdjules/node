@@ -909,6 +909,32 @@ Local<Value> WinapiErrnoException(Isolate* isolate,
 #endif
 
 
+static bool IsDomainActive(const Environment* env) {
+  if (!env->using_domains()) {
+    return false;
+  }
+
+  Local<Array> domain_array = env->domain_array().As<Array>();
+  uint32_t domainsArrayLength = domain_array->Length();
+  if (domainsArrayLength == 0)
+    return false;
+
+  Local<Value> domain_v = domain_array->Get(0);
+  return !domain_v->IsNull();
+}
+
+bool ShouldAbortOnUncaughtException(v8::Isolate* isolate) {
+  Environment* env = Environment::GetCurrent(isolate);
+
+  Local<Value> emitting_toplevel_domain_error_v =
+    env->process_object()->Get(env->emitting_toplevel_domain_error_string());
+  bool isDomainActive = IsDomainActive(env);
+  bool emittingTopLevelDomainError =
+    emitting_toplevel_domain_error_v->BooleanValue();
+  bool shouldAbort = !isDomainActive || emittingTopLevelDomainError;
+  return shouldAbort;
+}
+
 void SetupDomainUse(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args.GetIsolate());
 
@@ -3451,6 +3477,7 @@ void Init(int* argc,
   // Fetch a reference to the main isolate, so we have a reference to it
   // even when we need it to access it from another (debugger) thread.
   node_isolate = Isolate::New();
+  node_isolate->SetAbortOnUncaughtException(ShouldAbortOnUncaughtException);
   Isolate::Scope isolate_scope(node_isolate);
 
 #ifdef __POSIX__
